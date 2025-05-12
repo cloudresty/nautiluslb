@@ -1,0 +1,10 @@
+# Development IDEs
+.vscode
+.idea
+
+# Local Files
+bin/
+*.env
+*.dev
+**/config.yaml
+kubeconfig

@@ -1,0 +1,16 @@
+.git/
+.idea/
+.vscode/
+.DS_Store
+.dockerignore
+.editorconfig
+.env
+.gitattributes
+.gitignore
+.sh
+CHANGELOG.md
+Dockerfile
+Makefile
+README.md
+test-*
+config.yaml
