@@ -61,12 +61,9 @@ Make sure the host machine has both `config.yaml` and `.kube/config` files and t
 docker run \
     --name nautiluslb \
     --hostname nautiluslb \
-    --interactive \
-    --tty \
     --volume $$(pwd)/nautiluslb/config.yaml:/nautiluslb/config.yaml \
     --volume $$(HOME)/.kube/config:/root/.kube/config \
     --restart unless-stopped \
-    --entrypoint /bin/bash \
     nautiluslb:latest
 ```
 
