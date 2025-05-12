@@ -11,6 +11,7 @@ help: ## Show list of make targets and their description.
 
 build: ## Build a docker image locally. Requires /build/.netrc to be present.
 	@docker build \
+		--platform linux/amd64 \
 		--pull \
 		--force-rm \
 		--tag ${DOCKER_REPO}:${DOCKER_TAG} \
@@ -18,6 +19,7 @@ build: ## Build a docker image locally. Requires /build/.netrc to be present.
 
 run: ## Run docker image locally.
 	@docker run \
+		--platform linux/amd64 \
 		--rm \
 		--name ${NAME} \
 		--hostname ${NAME}-${DOCKER_TAG} \
@@ -25,6 +27,7 @@ run: ## Run docker image locally.
 
 shell: ## Run docker image in a shell locally.
 	@docker run \
+		--platform linux/amd64 \
 		--rm \
 		--name ${NAME} \
 		--hostname ${NAME}-${DOCKER_TAG} \
