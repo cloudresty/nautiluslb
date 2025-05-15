@@ -40,7 +40,7 @@ COPY    --from=builder /nautiluslb/nautiluslb /nautiluslb/nautiluslb
 # Set the Current Working Directory inside the container
 WORKDIR /nautiluslb
 
-EXPOSE  80
+EXPOSE  80 443
 
 # Execute the application when the container starts
 CMD     ["/nautiluslb/nautiluslb"]
