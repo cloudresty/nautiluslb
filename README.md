@@ -12,7 +12,7 @@
 
 &nbsp;
 
-NautilusLB is an open-source load balancer designed for high availability and scalability.
+NautilusLB is an open-source Layer 4 (TCP) load balancer designed for high availability and scalability.
 
 &nbsp;
 
@@ -53,6 +53,12 @@ backendConfigurations:
     health_check_interval: 10
     label_selector: "app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller"
     request_timeout: 5
+
+  - name: my_https_configuration
+    listener_address: "0.0.0.0:443"
+    health_check_interval: 10
+    label_selector: "app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller"
+    request_timeout: 5
 ```
 
 Make sure the host machine has both `config.yaml` and `.kube/config` files and then start NautilusLB as a container:
@@ -61,8 +67,8 @@ Make sure the host machine has both `config.yaml` and `.kube/config` files and t
 docker run \
     --name nautiluslb \
     --hostname nautiluslb \
-    --volume $$(pwd)/nautiluslb/config.yaml:/nautiluslb/config.yaml \
-    --volume $$(HOME)/.kube/config:/root/.kube/config \
+    --volume $(pwd)/nautiluslb/config.yaml:/nautiluslb/config.yaml \
+    --volume $(HOME)/.kube/config:/root/.kube/config \
     --restart unless-stopped \
     nautiluslb:latest
 ```

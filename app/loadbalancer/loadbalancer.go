@@ -21,11 +21,11 @@ type LoadBalancer struct {
 	listenerAddr     string
 	mu               sync.RWMutex
 	stopChan         chan struct{}
-	stopHealthChecks chan struct{} // Add this line
+	stopHealthChecks chan struct{}
 	healthCheckMap   map[string]bool
 	config           config.BackendConfiguration
 	requestTimeout   time.Duration
-	ListenerAddress  string // Add this line
+	ListenerAddress  string
 }
 
 // NewLoadBalancer creates a new LoadBalancer instance.
@@ -38,10 +38,11 @@ func NewLoadBalancer(config config.BackendConfiguration, requestTimeout time.Dur
 		config:           config,
 		requestTimeout:   requestTimeout,
 		stopChan:         make(chan struct{}),
-		stopHealthChecks: make(chan struct{}),    // Initialize the channel
-		ListenerAddress:  config.ListenerAddress, // Initialize it here
+		stopHealthChecks: make(chan struct{}),
+		ListenerAddress:  config.ListenerAddress,
 	}
-	lb.Listener = nil // Initialize to nil, listener will be created in Start()
+
+	lb.Listener = nil
 
 	return lb
 
@@ -124,8 +125,8 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 	log.Printf("Forwarding request from %s to backend %s:%d (%s)", clientIP, backend.IP, backend.Port, backend.PortName) // Log the backend port and name
 	log.Printf("Dialing backend %s:%d with timeout %s", backend.IP, backend.Port, lb.requestTimeout)
 
-	// Apply the request timeout
-	backendConn, err := net.DialTimeout("tcp", net.JoinHostPort(backend.IP, fmt.Sprintf("%d", backend.Port)), lb.requestTimeout)
+	// Use a proxy connection to forward the client connection
+	backendConn, err := net.Dial("tcp", net.JoinHostPort(backend.IP, fmt.Sprintf("%d", backend.Port)))
 	if err != nil {
 
 		// Handle backend connection error
@@ -139,22 +140,25 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 	// Forward data between client and backend
 	log.Printf("Starting to copy data between client and backend")
 
-	go func() {
+	// Use a WaitGroup to wait for both goroutines to finish
+	var wg sync.WaitGroup
+	wg.Add(2)
 
-		bytesCopied, err := io.Copy(backendConn, conn) // Copy from client to backend
-		log.Printf("Finished copying data from client to backend. Bytes copied: %d, Error: %v", bytesCopied, err)
+	go copyData(backendConn, conn, &wg, "client to backend")
+	go copyData(conn, backendConn, &wg, "backend to client")
 
-		if err != nil {
-			log.Printf("Error copying from client to backend: %v", err)
-		}
+	wg.Wait()
 
-	}()
+}
 
-	bytesCopied, err := io.Copy(conn, backendConn) // Copy from backend to client
-	log.Printf("Finished copying data from backend to client. Bytes copied: %d, Error: %v", bytesCopied, err)
+// copyData copies data from src to dst and logs errors.
+func copyData(dst net.Conn, src net.Conn, wg *sync.WaitGroup, direction string) {
 
-	if err != nil {
-		log.Printf("Error copying from backend to client: %v", err)
+	defer wg.Done()
+
+	_, err := io.Copy(dst, src)
+	if err != nil && err != io.EOF {
+		log.Printf("Error copying data %s: %v", direction, err)
 	}
 
 }
@@ -212,17 +216,21 @@ func (lb *LoadBalancer) runHealthCheck(server *backend.BackendServer) {
 }
 
 func (lb *LoadBalancer) StopHealthChecks() {
+
 	log.Printf("Stopping health checks for %s", lb.listenerAddr)
 	close(lb.stopHealthChecks)
+
 }
 
 func (lb *LoadBalancer) areHealthChecksStopped() bool {
+
 	select {
 	case <-lb.stopHealthChecks:
 		return true
 	default:
 		return false
 	}
+
 }
 
 // DiscoverK8sServices discovers services in Kubernetes and adds them as backends.
@@ -262,11 +270,18 @@ func (lb *LoadBalancer) GetListener() net.Listener {
 
 // Stop stops the load balancer
 func (lb *LoadBalancer) Stop() {
+
 	if lb.Listener != nil {
 		lb.Listener.Close()
 		log.Printf("Stopped listening on port: %s", lb.listenerAddr)
 	}
-	lb.Listener = nil // Explicitly set Listener to nil
+
+	lb.Listener = nil
 	close(lb.stopChan)
-	// time.Sleep(50 * time.Millisecond) // Add a small delay
+
+	// Wait for health checks to stop
+	for !lb.areHealthChecksStopped() {
+		time.Sleep(100 * time.Millisecond)
+	}
+
 }
