@@ -1,5 +1,7 @@
 package config
 
+import "fmt"
+
 // Config represents the overall configuration for the SLB.
 type Config struct {
 	Settings struct {
@@ -15,4 +17,18 @@ type BackendConfiguration struct {
 	HealthCheckInterval int    `yaml:"health_check_interval"`
 	LabelSelector       string `yaml:"label_selector"`
 	RequestTimeout      int    `yaml:"request_timeout,omitempty"`
+}
+
+// Validate validates the backend configuration.
+func (bc *BackendConfiguration) Validate() error {
+
+	if bc.HealthCheckInterval <= 0 {
+		return fmt.Errorf("invalid health_check_interval: %d (must be positive)", bc.HealthCheckInterval)
+	}
+
+	if bc.ListenerAddress == "" {
+		return fmt.Errorf("listener_address cannot be empty")
+	}
+
+	return nil
 }

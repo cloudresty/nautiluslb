@@ -8,14 +8,17 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudresty/nautiluslb/kubernetes"
+
 	"github.com/cloudresty/nautiluslb/config"
 	"github.com/cloudresty/nautiluslb/loadbalancer"
+	"github.com/cloudresty/nautiluslb/utils"
 	"gopkg.in/yaml.v3"
 )
 
 func main() {
 
-	version := "v0.0.1"
+	version := "v0.0.6"
 
 	asciiArt := `
  _   _             _   _ _           _     ____
@@ -38,6 +41,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize Kubernetes client
+	_, currentContext, err := kubernetes.GetK8sClient(configData.Settings.KubeconfigPath)
+	if err != nil {
+		log.Fatalf("Failed to initialize Kubernetes client: %v", err)
+		os.Exit(1)
+	}
+	log.Printf("Initialized Kubernetes client using local context '%s'", currentContext)
 	var wg sync.WaitGroup
 
 	// Create a new load balancer for each backend configuration
@@ -50,10 +60,10 @@ func main() {
 
 		lb := loadbalancer.NewLoadBalancer(backendConfig, duration)
 
-		// Start Kubernetes service discovery
+		// Start Kubernetes service discovery, passing the client
 		go lb.DiscoverK8sServices()
 
-		log.Printf("Started load balancer for %s on %s", backendConfig.Name, backendConfig.ListenerAddress)
+		log.Printf("Started load balancer for '%s' on port '%s'", backendConfig.Name, utils.ExtractPort(backendConfig.ListenerAddress))
 
 		// Start the load balancer
 		go func(lb *loadbalancer.LoadBalancer) {
@@ -92,6 +102,15 @@ func loadConfig(filename string) (config.Config, error) {
 	err = yaml.Unmarshal(data, &configData)
 	if err != nil {
 		return config.Config{}, err
+	}
+
+	// Validate backend configurations
+	for i, bc := range configData.BackendConfigurations {
+
+		if err := bc.Validate(); err != nil {
+			return config.Config{}, fmt.Errorf("invalid backend configuration at index %d: %v", i, err)
+		}
+
 	}
 
 	return configData, nil
