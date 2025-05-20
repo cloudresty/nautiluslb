@@ -24,50 +24,60 @@ func (server *BackendServer) HealthCheck(interval time.Duration) {
 
 	var lastCheck time.Time
 
-	consecutiveFailures := 0 // Counter for consecutive health check failures
+	failureCounter := 0
+	retryLimit := 3
+	connectionTimeout := 2 * time.Second
 
-	log.Printf("Starting health checks for %s:%d with interval: %s", server.IP, server.Port, interval)
+	// log.Printf("Starting health checks for %s:%d with interval: %s", server.IP, server.Port, interval)
 
 	for {
 
-		elapsed := time.Since(lastCheck) // Calculate elapsed time since last check
+		// Calculate elapsed time since last check
+		elapsed := time.Since(lastCheck)
 		sleepDuration := interval - elapsed
 		time.Sleep(sleepDuration)
-		conn, err := net.DialTimeout("tcp", net.JoinHostPort(server.IP, fmt.Sprintf("%d", server.Port)), 2*time.Second)
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(server.IP, fmt.Sprintf("%d", server.Port)), connectionTimeout)
 
 		healthChanged := false
 		if err != nil {
 
-			consecutiveFailures++
-			log.Printf("Backend %s:%d is unhealthy (attempt %d): %v", server.IP, server.Port, consecutiveFailures, err)
-			if consecutiveFailures >= 3 && server.Healthy { // Require 3 consecutive failures
+			failureCounter++
+
+			log.Printf("System | Backend %s:%d is unhealthy (attempt %d): %v", server.IP, server.Port, failureCounter, err)
+
+			if failureCounter >= retryLimit && server.Healthy { // Require 3 consecutive failures
 				server.Healthy = false
-				log.Printf("Backend %s:%d is now unhealthy (3 consecutive failures)", server.IP, server.Port)
+				log.Printf("System | Backend %s:%d is now unhealthy (3 consecutive failures)", server.IP, server.Port)
 			}
 
 		} else {
 
-			consecutiveFailures = 0 // Reset failure count on success
+			failureCounter = 0 // Reset failure count on success
+
 			if !server.Healthy {
 				server.Healthy = true
-				log.Printf("Backend %s:%d is now healthy", server.IP, server.Port)
+				log.Printf("System | Backend %s:%d is now healthy", server.IP, server.Port)
 			}
 			conn.Close()
 
 			if !server.Healthy {
 				server.Healthy = true
-				log.Printf("Backend %s:%d is now healthy", server.IP, server.Port)
+				log.Printf("System | Backend %s:%d is now healthy", server.IP, server.Port)
 			}
 
 		}
 		conn.Close()
 
 		if healthChanged {
-			log.Printf("Backend %s:%d is %s", server.IP, server.Port, server.healthStatus())
+			log.Printf("System | Backend %s:%d is %s", server.IP, server.Port, server.healthStatus())
 		}
+
 		lastCheck = time.Now()
+
 	}
+
 }
+
 func (server *BackendServer) healthStatus() string {
 
 	if server.Healthy {

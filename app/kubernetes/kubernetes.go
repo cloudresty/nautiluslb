@@ -54,17 +54,17 @@ func GetK8sClient(kubeconfigPath string) (*kubernetes.Clientset, string, error) 
 	config, err := rest.InClusterConfig()
 	if err == nil {
 
-		log.Println("Using in-cluster Kubernetes config")
+		log.Println("System | Using in-cluster Kubernetes config")
 		currentContext = "in-cluster"
 
 	} else {
 
-		log.Println("Failed to get in-cluster config:", err)
+		log.Println("System | Failed to get in-cluster config:", err)
 
 		// Fallback to kubeconfig file
 		if kubeconfigPath == "" {
 
-			log.Println("KUBECONFIG environment variable not set, using default ~/.kube/config")
+			log.Println("System | KUBECONFIG environment variable not set, using default ~/.kube/config")
 
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -75,7 +75,7 @@ func GetK8sClient(kubeconfigPath string) (*kubernetes.Clientset, string, error) 
 
 		} else {
 
-			log.Printf("Using KUBECONFIG: %s", kubeconfigPath)
+			log.Printf("System | Using KUBECONFIG: %s", kubeconfigPath)
 
 		}
 
@@ -104,8 +104,11 @@ func GetK8sClient(kubeconfigPath string) (*kubernetes.Clientset, string, error) 
 
 }
 
+// defaultHealthCheckInterval is the interval in seconds between health checks.
+var defaultHealthCheckInterval int = 30
+
 // DiscoverK8sServices discovers services in Kubernetes and adds them as backends.
-func DiscoverK8sServices(lb LoadBalancerInterface, config config.BackendConfiguration) {
+func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) {
 
 	// Get the shared Kubernetes client, it should already be initialized
 	k8sClient, err := GetSharedClient()
@@ -120,27 +123,15 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.BackendConfigur
 
 		for {
 
-			sleepDuration := 60 * time.Second
+			sleepDuration := time.Duration(defaultHealthCheckInterval) * time.Second
 
-			if config.HealthCheckInterval > 0 {
-
-				sleepDuration = time.Duration(config.HealthCheckInterval) * time.Second
-
-				if config.HealthCheckInterval < 60 {
-
-					sleepDuration = 60 * time.Second
-					log.Printf("Health check interval is too low, setting it to 10 seconds")
-
-				}
-
-			}
-
-			sleepDuration = time.Duration(config.HealthCheckInterval) * time.Second
-
+			// The sleep duration is now always the default interval
+			// since we removed config.HealthCheckInterval
+			// If you want to make this configurable in the future, you'll need to
 			services, err := k8sClient.CoreV1().Services("").List(context.TODO(), metav1.ListOptions{})
 
 			if err != nil {
-				log.Printf("Failed to list services: %v", err)
+				log.Printf("System | Failed to list services: %v", err)
 				continue
 			}
 
@@ -151,13 +142,14 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.BackendConfigur
 			nextBackendID := 1
 			var annotatedServices []string
 
+			// Iterate over all services
 			for _, service := range services.Items {
 
 				// Check for the custom annotation
 				if enabled, ok := service.Annotations["nautiluslb.cloudresty.io/enabled"]; ok && enabled == "true" {
 
 					annotatedServices = append(annotatedServices, fmt.Sprintf("%s/%s", service.Namespace, service.Name))
-					log.Printf("Discovered annotated service '%s/%s'", service.Namespace, service.Name)
+					// log.Printf("Discovered annotated service '%s/%s'", service.Namespace, service.Name)
 
 					switch service.Spec.Type {
 					case corev1.ServiceTypeNodePort, corev1.ServiceTypeLoadBalancer:
@@ -165,7 +157,9 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.BackendConfigur
 						// For NodePort and LoadBalancer services, we can use the NodePort directly.
 						for _, port := range service.Spec.Ports {
 
-							log.Printf("Found 'spec.ports.name: %s' - 'spec.ports.nodePort: %d'", port.Name, port.NodePort)
+							// log.Printf("Discovered annotated service '%s/%s', type '%s', port name '%s' and port number '%d'", service.Namespace, service.Name, service.Spec.Type, port.Name, port.NodePort)
+
+							// log.Printf("Found 'spec.ports.name: %s' - 'spec.ports.nodePort: %d'", port.Name, port.NodePort)
 							nodeIPs := getNodeIPs()
 
 							for _, nodeIP := range nodeIPs {
@@ -185,97 +179,97 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.BackendConfigur
 
 								// Check if the backend is already in the cache
 								if _, exists := backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)]; !exists {
-									log.Printf("Adding backend for '%s' with type '%s' towards '%s:%d'", service.Name, serviceType, backend.IP, backend.Port)
+									// log.Printf("System | Adding backend (%d): %s > %s > %s:%d", i+1, service.Name, serviceType, backend.IP, backend.Port)
 									backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = *backend
 								}
 
 								// Update the cache with the new backend information
 								existingBackend, ok := backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)]
 								if ok && (existingBackend.IP != backend.IP || existingBackend.Port != backend.Port) {
-									log.Printf("Updating backend for '%s' with type '%s' towards '%s:%d'", service.Name, serviceType, backend.IP, backend.Port)
+									log.Printf("System | Updating backend: %s >%s > %s:%d'", service.Name, serviceType, backend.IP, backend.Port)
 									backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = *backend
 								}
 
 							}
 
-							if config.LabelSelector != "" {
-								pods, err := k8sClient.CoreV1().Pods(service.Namespace).List(context.TODO(), metav1.ListOptions{
-									LabelSelector: config.LabelSelector,
-								})
-								if err != nil {
-									log.Printf("Failed to list pods for service '%s': %v", service.Name, err)
-									continue
-								}
+							// if config.LabelSelector != "" {
+							// 	pods, err := k8sClient.CoreV1().Pods(service.Namespace).List(context.TODO(), metav1.ListOptions{
+							// 		LabelSelector: config.LabelSelector,
+							// 	})
+							// 	if err != nil {
+							// 		log.Printf("Failed to list pods for service '%s': %v", service.Name, err)
+							// 		continue
+							// 	}
 
-								for _, pod := range pods.Items {
+							// 	for _, pod := range pods.Items {
 
-									if pod.Status.Phase == corev1.PodRunning {
-										backend := &backend.BackendServer{
-											ID:       nextBackendID,
-											IP:       pod.Status.HostIP,
-											Port:     int(port.NodePort),
-											PortName: port.Name,
-											Weight:   1,
-											Healthy:  true,
-										}
+							// 		if pod.Status.Phase == corev1.PodRunning {
+							// 			backend := &backend.BackendServer{
+							// 				ID:       nextBackendID,
+							// 				IP:       pod.Status.HostIP,
+							// 				Port:     int(port.NodePort),
+							// 				PortName: port.Name,
+							// 				Weight:   1,
+							// 				Healthy:  true,
+							// 			}
 
-										newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
-										nextBackendID++
-										log.Printf("Adding backend (NodePort/LoadBalancer): %s:%d", backend.IP, backend.Port)
+							// 			newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
+							// 			nextBackendID++
+							// 			log.Printf("Adding backend (NodePort/LoadBalancer): %s:%d", backend.IP, backend.Port)
 
-									}
+							// 		}
 
-								}
+							// 	}
 
-							} else {
+							// } else {
 
-								log.Printf("Label selector is empty. Cannot determine backend pods for NodePort/LoadBalancer service '%s'", service.Name)
+							// 	log.Printf("Label selector is empty. Cannot determine backend pods for NodePort/LoadBalancer service '%s'", service.Name)
 
-							}
-
-						}
-
-					case corev1.ServiceTypeClusterIP:
-
-						// For ClusterIP services, we use the ClusterIP and the target port.
-						if len(service.Spec.Ports) > 0 {
-
-							for _, port := range service.Spec.Ports {
-
-								log.Printf("Found ClusterIP port: %s - TargetPort: %d", port.Name, port.TargetPort.IntVal)
-
-								if port.TargetPort.IntVal > 0 {
-
-									// Create a backend for each port of the ClusterIP service
-									backend := &backend.BackendServer{
-										ID:       nextBackendID,
-										IP:       service.Spec.ClusterIP,
-										Port:     int(port.TargetPort.IntVal),
-										PortName: port.Name,
-										Weight:   1,
-										Healthy:  true,
-									}
-
-									newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
-									nextBackendID++
-									log.Printf("Adding backend (ClusterIP): %s:%d", backend.IP, backend.Port)
-
-								} else {
-
-									log.Printf("Skipping port '%s' because TargetPort is not defined or invalid.", port.Name)
-
-								}
-
-							}
-
-						} else {
-
-							log.Printf("No ports found for ClusterIP service '%s'", service.Name)
+							// }
 
 						}
+
+					// case corev1.ServiceTypeClusterIP:
+
+					// 	// For ClusterIP services, we use the ClusterIP and the target port.
+					// 	if len(service.Spec.Ports) > 0 {
+
+					// 		for _, port := range service.Spec.Ports {
+
+					// 			log.Printf("Found ClusterIP port: %s - TargetPort: %d", port.Name, port.TargetPort.IntVal)
+
+					// 			if port.TargetPort.IntVal > 0 {
+
+					// 				// Create a backend for each port of the ClusterIP service
+					// 				backend := &backend.BackendServer{
+					// 					ID:       nextBackendID,
+					// 					IP:       service.Spec.ClusterIP,
+					// 					Port:     int(port.TargetPort.IntVal),
+					// 					PortName: port.Name,
+					// 					Weight:   1,
+					// 					Healthy:  true,
+					// 				}
+
+					// 				newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
+					// 				nextBackendID++
+					// 				log.Printf("Adding backend (ClusterIP): %s:%d", backend.IP, backend.Port)
+
+					// 			} else {
+
+					// 				log.Printf("Skipping port '%s' because TargetPort is not defined or invalid.", port.Name)
+
+					// 			}
+
+					// 		}
+
+					// 	} else {
+
+					// 		log.Printf("No ports found for ClusterIP service '%s'", service.Name)
+
+					// 	}
 
 					default:
-						log.Printf("Service type '%s' not supported for service '%s'", service.Spec.Type, service.Name)
+						log.Printf("System | Service type '%s' not supported for service '%s'", service.Spec.Type, service.Name)
 
 					}
 
@@ -323,6 +317,7 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.BackendConfigur
 				// Accumulate the new backends in a temporary list
 				var backendList []*backend.BackendServer
 
+				// Add the new backends to the list
 				for _, backend := range newBackends {
 					backendList = append(backendList, backend)
 				}
@@ -333,16 +328,21 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.BackendConfigur
 
 			lb.GetMu().Unlock()
 
-			if len(annotatedServices) > 0 {
-				log.Printf("NautilusLB annotated services '%v' out of '%d' discovered Kubernetes services: %v", len(annotatedServices), len(services.Items), annotatedServices)
-			}
+			// if len(annotatedServices) > 0 {
+			// log.Printf("System | K8s annotated services (%v/%d): %v", len(annotatedServices), len(services.Items), annotatedServices)
+			// }
 
 			time.Sleep(sleepDuration) // Sleep before re-listing
 
 			if backendsChanged {
 
+				log.Println("System | Backend servers changed, updating background health checks")
 				lb.StartHealthChecks()
-				log.Printf("Health checks started")
+				log.Println("System | Background health checks configuration updated")
+
+			} else {
+
+				// log.Println("System | Backend servers unchanged, skipping background health checks configuration update")
 
 			}
 
@@ -358,7 +358,7 @@ func getNodeIPs() []string {
 
 	nodes, err := sharedK8sClient.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		log.Printf("Failed to list nodes: %v", err)
+		log.Printf("System | Failed to list nodes: %v", err)
 		return []string{}
 	}
 

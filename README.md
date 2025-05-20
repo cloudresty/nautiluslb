@@ -43,46 +43,46 @@ NautilusLB is configured using a YAML file named `config.yaml`. Here's an exampl
 
 # General settings
 settings:
-  kubeconfig_path: ""  # Path to your kubeconfig file (if running outside the cluster)
+  kubeconfigPath: ""  # Path to your kubeconfig file (if running outside the cluster)
 
 # Backend configurations
-backendConfigurations:
+configurations:
   - name: nginx_ingress_http_configuration
-    listener_address: ":80"  # Listen on port 80 for HTTP traffic
-    health_check_interval: 10  # Check backend health every 10 seconds
-    label_selector: "app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller"  # Select backend pods with this label
-    request_timeout: 5  # Timeout for backend requests (in seconds)
+    listenerAddress: ":80"  # Listen on port 80 for HTTP traffic
+    requestTimeout: 5  # Timeout for backend requests (in seconds)
+    backendLabelSelector: "app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller"  # Select backend pods with this label
+    backendPortName: "http"  # Name of the port in the backend service
 
   - name: nginx_ingress_https_configuration
-    listener_address: ":443"
-    health_check_interval: 10
-    label_selector: "app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller"
-    request_timeout: 5
+    listenerAddress: ":443"
+    backendLabelSelector: "app.kubernetes.io/name=ingress-nginx,app.kubernetes.io/component=controller"
+    requestTimeout: 5
+    backendPortName: "https"
 
   - name: mongodb_service_configuration
-    listener_address: ":27017"
-    health_check_interval: 30
-    label_selector: "app.kubernetes.io/component=mongos"
-    request_timeout: 10
+    listenerAddress: ":27017"
+    backendLabelSelector: "app.kubernetes.io/component=mongos"
+    requestTimeout: 10
+    backendPortName: "mongodb"
 
   - name: rabbitmq_amqp_service_configuration
-    listener_address: ":5672"
-    health_check_interval: 30
-    label_selector: "app.kubernetes.io/component=rabbitmq"
-    request_timeout: 10
+    listenerAddress: ":5672"
+    backendLabelSelector: "app.kubernetes.io/component=rabbitmq"
+    requestTimeout: 10
+    backendPortName: "amqp"
 ```
 
 &nbsp;
 
 **Key Configuration Parameters:**
 
-* **`settings.kubeconfig_path`:** (Optional) Path to your Kubernetes configuration file if NautilusLB is running outside the cluster. If empty, it will attempt to use the in-cluster configuration or the default kubeconfig file (`~/.kube/config`).
-* **`backendConfigurations`:** A list of backend configurations, each defining how to handle traffic for a specific service.
+* **`settings.kubeconfigPath`:** (Optional) Path to your Kubernetes configuration file if NautilusLB is running outside the cluster. If empty, it will attempt to use the in-cluster configuration or the default kubeconfig file (`~/.kube/config`).
+* **`configurations`:** A list of backend configurations, each defining how to handle traffic for a specific service.
   * **`name`:** A unique name for the backend configuration.
-  * **`listener_address`:** The address on which NautilusLB will listen for incoming connections for this backend (e.g., `:80`, `:443`, `:27017`).
-  * **`health_check_interval`:** The interval (in seconds) at which NautilusLB will perform health checks on the backend servers.
-  * **`label_selector`:** A Kubernetes label selector used to identify the backend pods for this service. NautilusLB will use this selector to discover the endpoints (IP addresses and ports) of the backend servers.
-  * **`request_timeout`:** (Optional) The timeout (in seconds) for requests forwarded to the backend servers.
+  * **`listenerAddress`:** The address on which NautilusLB will listen for incoming connections for this backend (e.g., `:80`, `:443`, `:27017`).
+  * **`requestTimeout`:** (Optional) The timeout (in seconds) for requests forwarded to the backend servers.
+  * **`backendLabelSelector`:** A Kubernetes label selector used to identify the backend pods for this service. NautilusLB will use this selector to discover the endpoints (IP addresses and ports) of the backend servers.
+  * **`backendPortName`:** The name of the port in the backend service that corresponds to the listener address. This is used to determine which port to forward traffic to on the selected backend pods.
 
 &nbsp;
 
@@ -186,7 +186,7 @@ spec:
 
 1. **Build or Obtain the NautilusLB Binary:** You can either build NautilusLB from source or download a pre-built binary (if available).
 2. **Create `config.yaml`:** Create a configuration file tailored to your environment and the services you want to load balance.
-3. **Run NautilusLB:** Execute the NautilusLB binary, providing the path to your `config.yaml` file as a command-line argument (if your application supports it) or ensuring it's in the same directory.  If running outside the cluster, make sure the `kubeconfig_path` in `config.yaml` is correctly set.
+3. **Run NautilusLB:** Execute the NautilusLB binary, providing the path to your `config.yaml` file as a command-line argument (if your application supports it) or ensuring it's in the same directory.  If running outside the cluster, make sure the `kubeconfigPath` in `config.yaml` is correctly set.
 
 For example, if you have a pre-built binary named `nautiluslb` and your `config.yaml` is in the same directory, you can run it like this:
 
@@ -241,16 +241,14 @@ To monitor NautilusLB, you can use standard logging tools to collect and analyze
 * Health check status
 * Errors or warnings
 
-For more advanced monitoring, you could consider integrating NautilusLB with a metrics collection system (e.g., Prometheus) to expose performance metrics like active connections, request rates, and error counts.
-
 &nbsp;
 
 ## Contributing
 
-Contributions are welcome! Please see the CONTRIBUTING.md file for guidelines.
+Contributions are welcome! Please see the [CONTRIBUTING.md](CONTRIBUTING.md) file for guidelines.
 
 &nbsp;
 
 ---
 
-Made with ♥️ by Cloudresty
+Made with ♥️ by [Cloudresty](https://cloudresty.com).

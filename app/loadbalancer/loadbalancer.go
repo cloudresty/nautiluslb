@@ -26,13 +26,13 @@ type LoadBalancer struct {
 	healthCheckMap   map[string]bool
 	healthCheckCache map[string]bool                // Cache for health check status
 	portBackendMap   map[int]*backend.BackendServer // Listener port to backend server mapping
-	config           config.BackendConfiguration
+	config           config.Configuration
 	requestTimeout   time.Duration
 	ListenerAddress  string
 }
 
 // NewLoadBalancer creates a new LoadBalancer instance.
-func NewLoadBalancer(config config.BackendConfiguration, requestTimeout time.Duration) *LoadBalancer {
+func NewLoadBalancer(config config.Configuration, requestTimeout time.Duration) *LoadBalancer {
 
 	lb := &LoadBalancer{
 		backendServers:   []*backend.BackendServer{},
@@ -45,43 +45,40 @@ func NewLoadBalancer(config config.BackendConfiguration, requestTimeout time.Dur
 		ListenerAddress:  config.ListenerAddress,
 		healthCheckCache: make(map[string]bool),
 	}
-	lb.Listener = nil
+	lb.Listener = nil // This should be after the struct initialization
 
-	go lb.StartHealthChecks()
 	return lb
 }
 
 // Start starts the load balancer.
 func (lb *LoadBalancer) Start() {
 
-	log.Printf("Starting health checks...")
 	go lb.StartHealthChecks()
-	log.Printf("Health checks started...")
 
 	var err error
 	lb.Listener, err = net.Listen("tcp", lb.listenerAddr)
 	if err != nil {
-		log.Fatalf("Failed to listen on port '%s': %v", utils.ExtractPort(lb.listenerAddr), err)
+		log.Fatalf("System | Failed to listen on port '%s': %v", utils.ExtractPort(lb.listenerAddr), err)
 	}
-
-	log.Printf("Listening on port '%s'", utils.ExtractPort(lb.listenerAddr))
 
 	listener := lb.GetListener()
 
 	if listener == nil {
-		log.Fatalf("Listener is not initialized")
+		log.Fatalf("System | Listener is not initialized")
 	}
 
 	// Accept incoming connections
 	for {
+
 		select {
+
 		case <-lb.stopChan:
-			log.Printf("Stop signal received, closing listener for '%s'", lb.listenerAddr)
+			log.Printf("System | Stop signal received, closing listener for '%s'", lb.listenerAddr)
 			return
 		default:
 			conn, err := listener.Accept()
 			if err != nil {
-				log.Printf("Failed to accept connection '%v'", err)
+				log.Printf("System | Failed to accept connection '%v'", err)
 				continue
 			}
 
@@ -90,6 +87,7 @@ func (lb *LoadBalancer) Start() {
 		}
 
 	}
+
 }
 
 // HandleConnection handles a single client connection.
@@ -97,14 +95,16 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 
 	defer conn.Close()
 
+	// Get the client IP address
 	clientIP, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 	if err != nil {
-		log.Printf("Failed to get client IP: %v", err)
+		log.Printf("System | Failed to get client IP: %v", err)
 		clientIP = "unknown"
 	}
 
+	// Get the listener port
 	listenerPort := conn.LocalAddr().(*net.TCPAddr).Port
-	log.Printf("New inbound connection from '%s' on listener port '%d'", clientIP, listenerPort)
+	log.Printf("Client | Received request: %s:%d", clientIP, listenerPort)
 
 	lb.mu.Lock()
 	// log.Printf("Selecting backend for listener port '%d'", listenerPort)
@@ -114,41 +114,41 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 	if backend == nil {
 
 		// No healthy backends
-		log.Printf("No healthy backends available for client '%s'", clientIP)
+		log.Printf("System | No healthy backends for: %s:%d", clientIP, listenerPort)
 		return
 	}
 
-	log.Printf("Selected backend configuration '%s', server '%s:%d'", lb.config.Name, backend.IP, backend.Port)
+	log.Printf("Client | Forwarding traffic: %s:%d -> %s -> %s:%d", clientIP, listenerPort, lb.config.Name, backend.IP, backend.Port)
 	backend.ActiveConnections++
 
 	defer func() {
-		log.Printf("Releasing backend '%s:%d'", backend.IP, backend.Port)
+		// log.Printf("Releasing backend '%s:%d'", backend.IP, backend.Port)
 		backend.ActiveConnections--
 	}()
 
-	log.Printf("Forwarding request from '%s' to backend '%s:%d' (%s)", clientIP, backend.IP, backend.Port, backend.PortName) // Log the backend port and name
-	log.Printf("Dialing backend '%s:%d' with timeout '%s'", backend.IP, backend.Port, lb.requestTimeout)
+	// log.Printf("Forwarding request from '%s' to backend '%s:%d' (%s)", clientIP, backend.IP, backend.Port, backend.PortName)
+	// log.Printf("Dialing backend '%s:%d' with timeout '%s'", backend.IP, backend.Port, lb.requestTimeout)
 
 	// Get a connection from the pool or create a new one
 	backendConn, err := net.Dial("tcp", net.JoinHostPort(backend.IP, fmt.Sprintf("%d", backend.Port)))
 	if err != nil {
 
 		// Handle backend connection error
-		log.Printf("Failed to connect to backend '%s:%d' for client '%s': %v", backend.IP, backend.Port, clientIP, err)
+		log.Printf("System | Failed to connect to backend '%s:%d' for client '%s': %v", backend.IP, backend.Port, clientIP, err)
 
 		// Check for specific error types and log accordingly
 		if opErr, ok := err.(*net.OpError); ok {
 			if opErr.Op == "dial" && opErr.Net == "tcp" {
-				log.Printf("Connection refused to backend '%s:%d': %v", backend.IP, backend.Port, opErr.Err)
+				log.Printf("System | Connection refused to backend '%s:%d': %v", backend.IP, backend.Port, opErr.Err)
 			} else {
-				log.Printf("Network error connecting to backend '%s:%d': %v", backend.IP, backend.Port, opErr.Err)
+				log.Printf("System | Network error connecting to backend '%s:%d': %v", backend.IP, backend.Port, opErr.Err)
 			}
 		}
 
 	}
 
 	// Forward data between client and backend
-	log.Printf("Starting to copy data between client '%s' and backend '%s:%d'", clientIP, backend.IP, backend.Port)
+	// log.Printf("Starting to copy data between client '%s' and backend '%s:%d'", clientIP, backend.IP, backend.Port)
 
 	// Use a WaitGroup to wait for both goroutines to finish
 	var wg sync.WaitGroup
@@ -158,9 +158,9 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 	go copyData(conn, backendConn, &wg, "backend to client")
 
 	// Wait for the data transfer to complete and then return the connection to the pool
-	log.Printf("Waiting for data transfer to complete between '%s' and backend '%s:%d'", clientIP, backend.IP, backend.Port)
+	// log.Printf("Waiting for data transfer to complete between '%s' and backend '%s:%d'", clientIP, backend.IP, backend.Port)
 	defer backendConn.Close()
-	log.Printf("Data transfer complete between '%s' and backend '%s:%d'", clientIP, backend.IP, backend.Port)
+	// log.Printf("Data transfer complete between '%s' and backend '%s:%d'", clientIP, backend.IP, backend.Port)
 
 	wg.Wait()
 
@@ -174,7 +174,7 @@ func copyData(dst net.Conn, src net.Conn, wg *sync.WaitGroup, direction string) 
 	_, err := io.Copy(dst, src)
 	if err != nil && err != io.EOF {
 
-		log.Printf("Error copying data '%s': %v", direction, err)
+		log.Printf("System | Error copying data '%s': %v", direction, err)
 
 		// Close the destination connection to signal the error
 		if closer, ok := dst.(interface{ CloseWrite() error }); ok {
@@ -190,7 +190,7 @@ func (lb *LoadBalancer) getNextBackend() *backend.BackendServer {
 
 	const maxRetries = 3
 
-	for i := 0; i < maxRetries; i++ {
+	for i := range maxRetries {
 
 		if len(lb.backendServers) == 0 {
 			return nil
@@ -201,37 +201,22 @@ func (lb *LoadBalancer) getNextBackend() *backend.BackendServer {
 
 		for _, server := range lb.backendServers {
 
-			// Check if the backend's port name matches the expected configuration
-			switch lb.config.Name {
+			if server.PortName != lb.config.BackendPortName {
 
-			case "http_traffic_configuration":
-				if server.PortName == "http" { // Assuming "http" port name for HTTP backends
-					filteredBackends = append(filteredBackends, server)
-				}
+				// log.Printf("System | Backend '%s:%d' does not match expected port name '%s'", server.IP, server.Port, lb.config.BackendPortName)
+				continue
 
-			case "https_traffic_configuration":
-				if server.PortName == "https" { // Assuming "https" port name for HTTPS backends
-					filteredBackends = append(filteredBackends, server)
-				}
+			} else {
 
-			case "mongodb_internal_service":
-				if server.PortName == "mongodb" { // Assuming "mongodb" port name for MongoDB backends
-					filteredBackends = append(filteredBackends, server)
-				}
+				filteredBackends = append(filteredBackends, server)
+				// log.Printf("System | Backend '%s:%d' matches expected port name '%s'", server.IP, server.Port, lb.config.BackendPortName)
 
-			case "rabbitmq_amqp_internal_service":
-				if server.PortName == "rabbitmq" { // Assuming "rabbitmq" port name for RabbitMQ backends
-					filteredBackends = append(filteredBackends, server)
-				}
-
-			default:
-				// Handle other cases or log an error if needed
-				log.Printf("Unknown backend configuration name '%s'", lb.config.Name)
 			}
+
 		}
 
 		if len(filteredBackends) == 0 {
-			log.Printf("No healthy backends available for configuration '%s'", lb.config.Name)
+			log.Printf("System | No healthy backends available for configuration '%s'", lb.config.Name)
 			return nil
 		}
 
@@ -244,7 +229,7 @@ func (lb *LoadBalancer) getNextBackend() *backend.BackendServer {
 		}
 
 		if i < maxRetries-1 {
-			time.Sleep(100 * time.Millisecond) // Backoff before retry
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 
@@ -266,31 +251,36 @@ func (lb *LoadBalancer) StartHealthChecks() {
 
 func (lb *LoadBalancer) runHealthCheck(server *backend.BackendServer) {
 
-	lb.mu.RLock() // Use RLock for reading healthCheckMap
-	key := fmt.Sprintf("%s:%d", server.IP, server.Port)
-	if _, ok := lb.healthCheckMap[key]; ok {
-		log.Printf("Health check already running for %s", key)
-		lb.mu.RUnlock()
+	lb.mu.Lock()
+
+	if _, ok := lb.healthCheckMap[fmt.Sprintf("%s:%d", server.IP, server.Port)]; ok {
+		log.Printf("System | Health check already running for %s:%d",
+			server.IP, server.Port)
+		lb.mu.Unlock()
 		return
 	}
-	lb.mu.RUnlock()
 
-	lb.mu.Lock() // Use Lock for writing to healthCheckMap and healthCheckCache
-	lb.healthCheckMap[key] = true
-	lb.healthCheckCache[key] = true // Also protect healthCheckCache
+	lb.healthCheckMap[fmt.Sprintf("%s:%d", server.IP, server.Port)] = true
 	lb.mu.Unlock()
 
-	log.Printf("Starting health checks with interval '%d' seconds for '%s'", lb.config.HealthCheckInterval, key)
+	// log.Printf("Health check: %s:%d / %ds", server.IP, server.Port, 10)
 
-	// No need to check the cache separately, it's always updated together with healthCheckMap
+	// Check if the health check is already in the cache
+	if _, exists := lb.healthCheckCache[fmt.Sprintf("%s:%d", server.IP, server.Port)]; !exists {
 
-	server.HealthCheck(time.Duration(lb.config.HealthCheckInterval) * time.Second)
+		log.Printf("System | Health check: %s:%d / %ds", server.IP, server.Port, 10)
+		lb.healthCheckCache[fmt.Sprintf("%s:%d", server.IP, server.Port)] = true
+
+	}
+
+	server.HealthCheck(time.Duration(10) * time.Second)
 
 }
 
+// StopHealthChecks stops health checks for all backend servers.
 func (lb *LoadBalancer) StopHealthChecks() {
 
-	log.Printf("Stopping health checks for %s", lb.listenerAddr)
+	log.Printf("System | Stopping health checks for %s", lb.listenerAddr)
 	close(lb.stopHealthChecks)
 
 }
@@ -346,7 +336,7 @@ func (lb *LoadBalancer) Stop() {
 
 	if lb.Listener != nil {
 		lb.Listener.Close()
-		log.Printf("Stopped listening on port: %s", utils.ExtractPort(lb.listenerAddr))
+		log.Printf("System | Stopped listening on port: %s", utils.ExtractPort(lb.listenerAddr))
 	}
 
 	lb.Listener = nil

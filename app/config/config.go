@@ -1,34 +1,47 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+)
 
 // Config represents the overall configuration for the SLB.
 type Config struct {
 	Settings struct {
-		KubeconfigPath string `yaml:"kubeconfig_path"`
+		KubeconfigPath string `yaml:"kubeconfigPath"`
 	} `yaml:"settings"`
-	BackendConfigurations []BackendConfiguration `yaml:"backendConfigurations"`
+	BackendConfigurations []Configuration `yaml:"configurations"`
 }
 
-// BackendConfiguration represents the configuration for a backend.
-type BackendConfiguration struct {
-	Name                string `yaml:"name"`
-	ListenerAddress     string `yaml:"listener_address"`
-	HealthCheckInterval int    `yaml:"health_check_interval"`
-	LabelSelector       string `yaml:"label_selector"`
-	RequestTimeout      int    `yaml:"request_timeout,omitempty"`
+// Configuration represents the configuration for a backend.
+type Configuration struct {
+	Name                 string `yaml:"name"`
+	ListenerAddress      string `yaml:"listenerAddress"`
+	RequestTimeout       int    `yaml:"requestTimeout,omitempty"`
+	BackendLabelSelector string `yaml:"backendLabelSelector"`
+	BackendPortName      string `yaml:"backendPortName"`
 }
 
 // Validate validates the backend configuration.
-func (bc *BackendConfiguration) Validate() error {
+func (bc *Configuration) Validate() error {
 
-	if bc.HealthCheckInterval <= 0 {
-		return fmt.Errorf("invalid health_check_interval: %d (must be positive)", bc.HealthCheckInterval)
+	// log.Printf("Validating backend configuration '%s'", bc.Name)
+
+	if bc.Name == "" {
+		return fmt.Errorf("'name' cannot be empty")
 	}
 
 	if bc.ListenerAddress == "" {
-		return fmt.Errorf("listener_address cannot be empty")
+		return fmt.Errorf("'listenerAddress' cannot be empty")
+	}
+
+	if bc.BackendLabelSelector == "" {
+		return fmt.Errorf("'backendLabelSelector' cannot be empty")
+	}
+
+	if bc.BackendPortName == "" {
+		return fmt.Errorf("'backendPortName' cannot be empty")
 	}
 
 	return nil
+
 }
