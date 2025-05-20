@@ -169,7 +169,7 @@ metadata:
 ...
 spec:
   ports:
-    - name: ampq
+    - name: amqp
       protocol: TCP
       port: 5672
       targetPort: 5672
