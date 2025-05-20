@@ -192,81 +192,81 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 
 							}
 
-							// if config.LabelSelector != "" {
-							// 	pods, err := k8sClient.CoreV1().Pods(service.Namespace).List(context.TODO(), metav1.ListOptions{
-							// 		LabelSelector: config.LabelSelector,
-							// 	})
-							// 	if err != nil {
-							// 		log.Printf("Failed to list pods for service '%s': %v", service.Name, err)
-							// 		continue
-							// 	}
+							if config.BackendLabelSelector != "" {
+								pods, err := k8sClient.CoreV1().Pods(service.Namespace).List(context.TODO(), metav1.ListOptions{
+									LabelSelector: config.BackendLabelSelector,
+								})
+								if err != nil {
+									log.Printf("Failed to list pods for service '%s': %v", service.Name, err)
+									continue
+								}
 
-							// 	for _, pod := range pods.Items {
+								for _, pod := range pods.Items {
 
-							// 		if pod.Status.Phase == corev1.PodRunning {
-							// 			backend := &backend.BackendServer{
-							// 				ID:       nextBackendID,
-							// 				IP:       pod.Status.HostIP,
-							// 				Port:     int(port.NodePort),
-							// 				PortName: port.Name,
-							// 				Weight:   1,
-							// 				Healthy:  true,
-							// 			}
+									if pod.Status.Phase == corev1.PodRunning {
+										backend := &backend.BackendServer{
+											ID:       nextBackendID,
+											IP:       pod.Status.HostIP,
+											Port:     int(port.NodePort),
+											PortName: port.Name,
+											Weight:   1,
+											Healthy:  true,
+										}
 
-							// 			newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
-							// 			nextBackendID++
-							// 			log.Printf("Adding backend (NodePort/LoadBalancer): %s:%d", backend.IP, backend.Port)
+										newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
+										nextBackendID++
+										// log.Printf("Adding backend (NodePort/LoadBalancer): %s:%d", backend.IP, backend.Port)
 
-							// 		}
+									}
 
-							// 	}
+								}
 
-							// } else {
+							} else {
 
-							// 	log.Printf("Label selector is empty. Cannot determine backend pods for NodePort/LoadBalancer service '%s'", service.Name)
+								log.Printf("Label selector is empty. Cannot determine backend pods for NodePort/LoadBalancer service '%s'", service.Name)
 
-							// }
+							}
 
 						}
 
-					// case corev1.ServiceTypeClusterIP:
+					case corev1.ServiceTypeClusterIP:
 
-					// 	// For ClusterIP services, we use the ClusterIP and the target port.
-					// 	if len(service.Spec.Ports) > 0 {
+						// For ClusterIP services, we use the ClusterIP and the target port.
+						if len(service.Spec.Ports) > 0 {
 
-					// 		for _, port := range service.Spec.Ports {
+							for _, port := range service.Spec.Ports {
 
-					// 			log.Printf("Found ClusterIP port: %s - TargetPort: %d", port.Name, port.TargetPort.IntVal)
+								log.Printf("Found ClusterIP port: %s - TargetPort: %d", port.Name, port.TargetPort.IntVal)
 
-					// 			if port.TargetPort.IntVal > 0 {
+								if port.TargetPort.IntVal > 0 {
 
-					// 				// Create a backend for each port of the ClusterIP service
-					// 				backend := &backend.BackendServer{
-					// 					ID:       nextBackendID,
-					// 					IP:       service.Spec.ClusterIP,
-					// 					Port:     int(port.TargetPort.IntVal),
-					// 					PortName: port.Name,
-					// 					Weight:   1,
-					// 					Healthy:  true,
-					// 				}
+									// Create a backend for each port of the ClusterIP service
+									backend := &backend.BackendServer{
+										ID:       nextBackendID,
+										IP:       service.Spec.ClusterIP,
+										Port:     int(port.TargetPort.IntVal),
+										PortName: port.Name,
+										Weight:   1,
+										Healthy:  true,
+									}
 
-					// 				newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
-					// 				nextBackendID++
-					// 				log.Printf("Adding backend (ClusterIP): %s:%d", backend.IP, backend.Port)
+									newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
+									nextBackendID++
+									// log.Printf("Adding backend (ClusterIP): %s:%d", backend.IP, backend.Port)
 
-					// 			} else {
+								} else {
 
-					// 				log.Printf("Skipping port '%s' because TargetPort is not defined or invalid.", port.Name)
+									log.Printf("Skipping port '%s' because TargetPort is not defined or invalid.", port.Name)
 
-					// 			}
+								}
 
-					// 		}
+							}
 
-					// 	} else {
+						} else {
 
-					// 		log.Printf("No ports found for ClusterIP service '%s'", service.Name)
+							log.Printf("No ports found for ClusterIP service '%s'", service.Name)
 
-					// 	}
+						}
 
 					default:
 						log.Printf("System | Service type '%s' not supported for service '%s'", service.Spec.Type, service.Name)
