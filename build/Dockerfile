@@ -21,7 +21,7 @@ COPY    app/ .
 
 # Go Dependencies
 RUN     go clean -modcache
-# RUN     go mod tidy -compat=1.24
+RUN     go mod tidy -compat=1.24
 
 # Build the Go app
 RUN     go build -o nautiluslb .
