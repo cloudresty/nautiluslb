@@ -3,19 +3,29 @@ NAME = $$(awk -F'/' '{print $$(NF-0)}' <<< $$PWD)
 DOCKER_REPO = ${BASE}/${NAME}
 DOCKER_TAG = test
 
-.PHONY: build run shell clean
+.PHONY: build build-local run shell clean test docker-build
 
 help: ## Show list of make targets and their description.
 	@grep -E '^[%a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-build: ## Build a docker image locally. Requires /build/.netrc to be present.
+build-local: ## Build the binary locally.
+	@echo "Building NautilusLB locally..."
+	@cd app && go build -o ../nautiluslb .
+
+build: ## Build a docker image locally.
+	@echo "Building Docker image..."
 	@docker build \
 		--platform linux/amd64 \
 		--pull \
 		--force-rm \
 		--tag ${DOCKER_REPO}:${DOCKER_TAG} \
 		--file build/Dockerfile .
+
+docker-build: build ## Alias for build target.
+
+test: ## Run all tests.
+	@cd app && go test ./...
 
 run: ## Run docker image locally.
 	@docker run \
