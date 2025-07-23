@@ -120,10 +120,7 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 		emit.ZString("client_ip", clientIP),
 		emit.ZInt("listener_port", listenerPort))
 
-	lb.mu.Lock()
-	// log.Printf("Selecting backend for listener port '%d'", listenerPort)
 	backend := lb.getNextBackend()
-	lb.mu.Unlock()
 
 	if backend == nil {
 
@@ -233,7 +230,10 @@ func (lb *LoadBalancer) getNextBackend() *backend.BackendServer {
 
 	for i := range maxRetries {
 
+		lb.mu.Lock()
+
 		if len(lb.backendServers) == 0 {
+			lb.mu.Unlock()
 			return nil
 		}
 
@@ -257,6 +257,7 @@ func (lb *LoadBalancer) getNextBackend() *backend.BackendServer {
 		}
 
 		if len(filteredBackends) == 0 {
+			lb.mu.Unlock()
 			emit.Warn.StructuredFields("No healthy backends available",
 				emit.ZString("configuration", lb.config.Name))
 			return nil
@@ -265,6 +266,8 @@ func (lb *LoadBalancer) getNextBackend() *backend.BackendServer {
 		// Apply round-robin to the filtered backends
 		lb.nextServer = (lb.nextServer + 1) % len(filteredBackends)
 		server := filteredBackends[lb.nextServer]
+
+		lb.mu.Unlock()
 
 		if server.Healthy {
 			return server
