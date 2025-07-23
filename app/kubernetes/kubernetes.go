@@ -183,17 +183,12 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 					// Skip label selector check - just use annotation + namespace + port name
 					// This allows services without specific labels to be discovered
 
-					// log.Printf("Discovered annotated service '%s/%s'", service.Namespace, service.Name)
-
 					switch service.Spec.Type {
 					case corev1.ServiceTypeNodePort, corev1.ServiceTypeLoadBalancer:
 
 						// For NodePort and LoadBalancer services, we can use the NodePort directly.
 						for _, port := range service.Spec.Ports {
 
-							// log.Printf("Discovered annotated service '%s/%s', type '%s', port name '%s' and port number '%d'", service.Namespace, service.Name, service.Spec.Type, port.Name, port.NodePort)
-
-							// log.Printf("Found 'spec.ports.name: %s' - 'spec.ports.nodePort: %d'", port.Name, port.NodePort)
 							nodeIPs := getNodeIPs()
 
 							for _, nodeIP := range nodeIPs {
@@ -213,7 +208,6 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 
 								// Check if the backend is already in the cache
 								if _, exists := backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)]; !exists {
-									// log.Printf("System | Adding backend (%d): %s > %s > %s:%d", i+1, service.Name, serviceType, backend.IP, backend.Port)
 									backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = *backend
 								}
 
@@ -260,7 +254,6 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 
 									newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
 									nextBackendID++
-									// log.Printf("Adding backend (ClusterIP): %s:%d", backend.IP, backend.Port)
 
 								} else {
 
@@ -339,10 +332,6 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 			}
 
 			lb.GetMu().Unlock()
-
-			// if len(annotatedServices) > 0 {
-			// log.Printf("System | K8s annotated services (%v/%d): %v", len(annotatedServices), len(services.Items), annotatedServices)
-			// }
 
 			time.Sleep(sleepDuration) // Sleep before re-listing
 

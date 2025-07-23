@@ -18,8 +18,6 @@ import (
 func main() {
 
 	// Configure emit logging
-	// emit.SetComponent("nautiluslb")
-	// emit.SetVersion(version.Version)
 	emit.SetLevel("info")
 
 	// Parse command line flags

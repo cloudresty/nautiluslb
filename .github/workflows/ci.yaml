@@ -125,9 +125,7 @@ jobs:
 
     - name: Build and load Docker image
       run: |
-        cd app
-        go build -o nautiluslb .
-        docker build -t cloudresty/nautiluslb:test -f ../build/Dockerfile .
+        docker build -t cloudresty/nautiluslb:test -f ./build/Dockerfile .
         kind load docker-image cloudresty/nautiluslb:test --name nautiluslb-test
 
     - name: Deploy test services

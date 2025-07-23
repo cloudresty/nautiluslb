@@ -30,8 +30,6 @@ func (server *BackendServer) HealthCheck(interval time.Duration) {
 	retryLimit := 3
 	connectionTimeout := 2 * time.Second
 
-	// log.Printf("Starting health checks for %s:%d with interval: %s", server.IP, server.Port, interval)
-
 	for {
 
 		// Calculate elapsed time since last check

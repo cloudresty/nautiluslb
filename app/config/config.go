@@ -26,8 +26,6 @@ type Configuration struct {
 // Validate validates the backend configuration.
 func (bc *Configuration) Validate() error {
 
-	// log.Printf("Validating backend configuration '%s'", bc.Name)
-
 	if bc.Name == "" {
 		return fmt.Errorf("'name' cannot be empty")
 	}
@@ -35,11 +33,6 @@ func (bc *Configuration) Validate() error {
 	if bc.ListenerAddress == "" {
 		return fmt.Errorf("'listenerAddress' cannot be empty")
 	}
-
-	// Allow empty backendLabelSelector for services without labels
-	// if bc.BackendLabelSelector == "" {
-	//	return fmt.Errorf("'backendLabelSelector' cannot be empty")
-	// }
 
 	if bc.BackendPortName == "" {
 		return fmt.Errorf("'backendPortName' cannot be empty")
@@ -51,11 +44,14 @@ func (bc *Configuration) Validate() error {
 
 // GetListenerPort extracts the port number from ListenerAddress
 func (bc *Configuration) GetListenerPort() (int, error) {
+
 	addr := strings.TrimSpace(bc.ListenerAddress)
 	addr = strings.TrimPrefix(addr, ":")
 	port, err := strconv.Atoi(addr)
 	if err != nil {
 		return 0, fmt.Errorf("invalid listenerAddress '%s': %v", bc.ListenerAddress, err)
 	}
+
 	return port, nil
+
 }
