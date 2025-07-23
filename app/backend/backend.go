@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -58,7 +59,12 @@ func (server *BackendServer) HealthCheck(interval time.Duration) {
 				server.Healthy = true
 				log.Printf("System | Backend %s:%d is now healthy", server.IP, server.Port)
 			}
-			conn.Close()
+			if err := conn.Close(); err != nil {
+				// Only log if it's not an expected "already closed" error
+				if !isConnectionClosedError(err) {
+					log.Printf("Warning: Failed to close health check connection: %v", err)
+				}
+			}
 
 			if !server.Healthy {
 				server.Healthy = true
@@ -66,7 +72,12 @@ func (server *BackendServer) HealthCheck(interval time.Duration) {
 			}
 
 		}
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			// Only log if it's not an expected "already closed" error
+			if !isConnectionClosedError(err) {
+				log.Printf("Warning: Failed to close health check connection: %v", err)
+			}
+		}
 
 		if healthChanged {
 			log.Printf("System | Backend %s:%d is %s", server.IP, server.Port, server.healthStatus())
@@ -86,4 +97,9 @@ func (server *BackendServer) healthStatus() string {
 
 	return "unhealthy"
 
+}
+
+// isConnectionClosedError checks if the error is due to connection already being closed
+func isConnectionClosedError(err error) bool {
+	return strings.Contains(err.Error(), "use of closed network connection")
 }

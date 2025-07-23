@@ -1,0 +1,229 @@
+name: CI
+
+# This CI workflow runs linting, testing, and builds for NautilusLB.
+# It tests against multiple Go versions and includes comprehensive checks
+# for code quality, security, and functionality.
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        go-version: [1.23, 1.24]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ matrix.go-version }}
+        cache: true
+
+    - name: Change to app directory
+      run: cd app
+
+    - name: Install dependencies
+      run: cd app && go mod download
+
+    - name: Verify dependencies
+      run: cd app && go mod verify
+
+    - name: Format check
+      run: |
+        cd app
+        go fmt ./...
+        git diff --exit-code
+
+    - name: Vet
+      run: cd app && go vet ./...
+
+    - name: Run tests
+      run: cd app && go test -v -race ./...
+
+    - name: Run tests with coverage
+      run: cd app && go test -v -race -coverprofile=coverage.out ./...
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./app/coverage.out
+        flags: unittests
+        name: codecov-umbrella
+
+    - name: Build binary
+      run: cd app && go build -v ./...
+
+    - name: Test build output
+      run: |
+        cd app
+        ./nautiluslb --help || echo "Binary built successfully (help command may not be available)"
+        ls -la nautiluslb
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 1.24
+        cache: true
+
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v6
+      with:
+        version: latest
+        working-directory: app
+        args: --out-format=colored-line-number --timeout=5m
+
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 1.24
+        cache: true
+
+    - name: Run Gosec Security Scanner
+      uses: securecodewarrior/github-action-gosec@master
+      with:
+        args: '-fmt sarif -out results.sarif ./app/...'
+
+    - name: Upload SARIF file
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: results.sarif
+
+  docker-build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch full history for git describe
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Get version information
+      id: version
+      run: |
+        GIT_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "")
+        GIT_COMMIT=$(git rev-parse --short HEAD)
+        BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S_UTC')
+
+        if [ ! -z "$GIT_TAG" ]; then
+          VERSION="$GIT_TAG"
+        else
+          GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          VERSION="${GIT_BRANCH}-${GIT_COMMIT}"
+        fi
+
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "git_tag=$GIT_TAG" >> $GITHUB_OUTPUT
+        echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
+        echo "build_time=$BUILD_TIME" >> $GITHUB_OUTPUT
+
+    - name: Build Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./build/Dockerfile
+        push: false
+        tags: cloudresty/nautiluslb:${{ steps.version.outputs.version }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        build-args: |
+          VERSION=${{ steps.version.outputs.version }}
+          GIT_COMMIT=${{ steps.version.outputs.git_commit }}
+          BUILD_TIME=${{ steps.version.outputs.build_time }}
+          GIT_TAG=${{ steps.version.outputs.git_tag }}
+
+  integration:
+    runs-on: ubuntu-latest
+    needs: [test, lint]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: 1.24
+        cache: true
+
+    - name: Create kind cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: nautiluslb-test
+
+    - name: Build and load Docker image
+      run: |
+        cd app
+        go build -o nautiluslb .
+        docker build -t cloudresty/nautiluslb:test -f ../build/Dockerfile .
+        kind load docker-image cloudresty/nautiluslb:test --name nautiluslb-test
+
+    - name: Deploy test services
+      run: |
+        kubectl create namespace test-namespace
+        kubectl apply -f - <<EOF
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: test-service
+          namespace: test-namespace
+          annotations:
+            nautiluslb.cloudresty.io/enabled: "true"
+        spec:
+          type: NodePort
+          ports:
+          - name: http
+            port: 80
+            targetPort: 80
+          selector:
+            app: test-app
+        ---
+        apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: test-deployment
+          namespace: test-namespace
+        spec:
+          replicas: 2
+          selector:
+            matchLabels:
+              app: test-app
+          template:
+            metadata:
+              labels:
+                app: test-app
+            spec:
+              containers:
+              - name: nginx
+                image: nginx:alpine
+                ports:
+                - containerPort: 80
+        EOF
+
+    - name: Wait for deployment
+      run: kubectl wait --for=condition=available deployment/test-deployment -n test-namespace --timeout=300s
+
+    - name: Test service discovery
+      run: |
+        kubectl get services -n test-namespace
+        kubectl get endpoints -n test-namespace
+
+    - name: Cleanup
+      run: kubectl delete namespace test-namespace

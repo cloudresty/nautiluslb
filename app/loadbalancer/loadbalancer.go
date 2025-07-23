@@ -24,8 +24,7 @@ type LoadBalancer struct {
 	stopChan         chan struct{}
 	stopHealthChecks chan struct{}
 	healthCheckMap   map[string]bool
-	healthCheckCache map[string]bool                // Cache for health check status
-	portBackendMap   map[int]*backend.BackendServer // Listener port to backend server mapping
+	healthCheckCache map[string]bool // Cache for health check status
 	config           config.Configuration
 	requestTimeout   time.Duration
 	ListenerAddress  string
@@ -93,7 +92,11 @@ func (lb *LoadBalancer) Start() {
 // HandleConnection handles a single client connection.
 func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 
-	defer conn.Close()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("Warning: Failed to close client connection: %v", err)
+		}
+	}()
 
 	// Get the client IP address
 	clientIP, _, err := net.SplitHostPort(conn.RemoteAddr().String())
@@ -159,7 +162,11 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 
 	// Wait for the data transfer to complete and then return the connection to the pool
 	// log.Printf("Waiting for data transfer to complete between '%s' and backend '%s:%d'", clientIP, backend.IP, backend.Port)
-	defer backendConn.Close()
+	defer func() {
+		if err := backendConn.Close(); err != nil {
+			log.Printf("Warning: Failed to close backend connection: %v", err)
+		}
+	}()
 	// log.Printf("Data transfer complete between '%s' and backend '%s:%d'", clientIP, backend.IP, backend.Port)
 
 	wg.Wait()
@@ -178,7 +185,9 @@ func copyData(dst net.Conn, src net.Conn, wg *sync.WaitGroup, direction string) 
 
 		// Close the destination connection to signal the error
 		if closer, ok := dst.(interface{ CloseWrite() error }); ok {
-			closer.CloseWrite()
+			if err := closer.CloseWrite(); err != nil {
+				log.Printf("Warning: Failed to close write connection: %v", err)
+			}
 		}
 
 	}
@@ -280,6 +289,18 @@ func (lb *LoadBalancer) runHealthCheck(server *backend.BackendServer) {
 // StopHealthChecks stops health checks for all backend servers.
 func (lb *LoadBalancer) StopHealthChecks() {
 
+	lb.mu.Lock()
+	defer lb.mu.Unlock()
+
+	// Check if already stopped to prevent closing channel twice
+	select {
+	case <-lb.stopHealthChecks:
+		// Already closed
+		return
+	default:
+		// Not closed yet, safe to close
+	}
+
 	log.Printf("System | Stopping health checks for %s", lb.listenerAddr)
 	close(lb.stopHealthChecks)
 
@@ -335,16 +356,32 @@ func (lb *LoadBalancer) GetListener() net.Listener {
 func (lb *LoadBalancer) Stop() {
 
 	if lb.Listener != nil {
-		lb.Listener.Close()
+		if err := lb.Listener.Close(); err != nil {
+			log.Printf("Warning: Failed to close listener: %v", err)
+		}
 		log.Printf("System | Stopped listening on port: %s", utils.ExtractPort(lb.listenerAddr))
 	}
 
 	lb.Listener = nil
 	close(lb.stopChan)
 
-	// Wait for health checks to stop
-	for !lb.areHealthChecksStopped() {
-		time.Sleep(100 * time.Millisecond)
-	}
+	// Stop health checks first, then wait for them to stop
+	lb.StopHealthChecks()
 
+	// Wait for health checks to stop with a timeout to prevent hanging
+	timeout := time.After(5 * time.Second)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timeout:
+			log.Printf("System | Timeout waiting for health checks to stop")
+			return
+		case <-ticker.C:
+			if lb.areHealthChecksStopped() {
+				return
+			}
+		}
+	}
 }

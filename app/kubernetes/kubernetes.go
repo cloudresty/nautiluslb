@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -107,6 +108,29 @@ func GetK8sClient(kubeconfigPath string) (*kubernetes.Clientset, string, error) 
 // defaultHealthCheckInterval is the interval in seconds between health checks.
 var defaultHealthCheckInterval int = 30
 
+// matchesLabelSelector checks if service labels match the given label selector
+func matchesLabelSelector(serviceLabels map[string]string, labelSelector string) bool {
+	if labelSelector == "" {
+		return true // Empty selector matches everything
+	}
+
+	// Parse label selector (format: "key1=value1,key2=value2")
+	pairs := strings.Split(labelSelector, ",")
+	for _, pair := range pairs {
+		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(parts[0])
+		value := strings.TrimSpace(parts[1])
+
+		if serviceLabels[key] != value {
+			return false
+		}
+	}
+	return true
+}
+
 // DiscoverK8sServices discovers services in Kubernetes and adds them as backends.
 func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) {
 
@@ -128,10 +152,17 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 			// The sleep duration is now always the default interval
 			// since we removed config.HealthCheckInterval
 			// If you want to make this configurable in the future, you'll need to
-			services, err := k8sClient.CoreV1().Services("").List(context.TODO(), metav1.ListOptions{})
+
+			// Use the namespace from config, default to all namespaces if empty
+			namespace := config.Namespace
+			if namespace == "" {
+				namespace = "" // All namespaces (empty string means all namespaces)
+			}
+
+			services, err := k8sClient.CoreV1().Services(namespace).List(context.TODO(), metav1.ListOptions{})
 
 			if err != nil {
-				log.Printf("System | Failed to list services: %v", err)
+				log.Printf("System | Failed to list services in namespace '%s': %v", namespace, err)
 				continue
 			}
 
@@ -140,15 +171,14 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 			// Create a map to track the new backends
 			newBackends := make(map[string]*backend.BackendServer)
 			nextBackendID := 1
-			var annotatedServices []string
 
 			// Iterate over all services
-			for _, service := range services.Items {
-
-				// Check for the custom annotation
+			for _, service := range services.Items { // Check for the custom annotation
 				if enabled, ok := service.Annotations["nautiluslb.cloudresty.io/enabled"]; ok && enabled == "true" {
 
-					annotatedServices = append(annotatedServices, fmt.Sprintf("%s/%s", service.Namespace, service.Name))
+					// Skip label selector check - just use annotation + namespace + port name
+					// This allows services without specific labels to be discovered
+
 					// log.Printf("Discovered annotated service '%s/%s'", service.Namespace, service.Name)
 
 					switch service.Spec.Type {
@@ -192,40 +222,8 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 
 							}
 
-							if config.BackendLabelSelector != "" {
-								pods, err := k8sClient.CoreV1().Pods(service.Namespace).List(context.TODO(), metav1.ListOptions{
-									LabelSelector: config.BackendLabelSelector,
-								})
-								if err != nil {
-									log.Printf("Failed to list pods for service '%s': %v", service.Name, err)
-									continue
-								}
-
-								for _, pod := range pods.Items {
-
-									if pod.Status.Phase == corev1.PodRunning {
-										backend := &backend.BackendServer{
-											ID:       nextBackendID,
-											IP:       pod.Status.HostIP,
-											Port:     int(port.NodePort),
-											PortName: port.Name,
-											Weight:   1,
-											Healthy:  true,
-										}
-
-										newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
-										nextBackendID++
-										// log.Printf("Adding backend (NodePort/LoadBalancer): %s:%d", backend.IP, backend.Port)
-
-									}
-
-								}
-
-							} else {
-
-								log.Printf("Label selector is empty. Cannot determine backend pods for NodePort/LoadBalancer service '%s'", service.Name)
-
-							}
+							// Simplified: Use NodePort directly without pod discovery
+							// This works with annotation-only approach
 
 						}
 
@@ -341,11 +339,9 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 				log.Println("System | Background health checks configuration updated")
 
 			} else {
-
-				// log.Println("System | Backend servers unchanged, skipping background health checks configuration update")
-
+				// Backend servers unchanged, skipping background health checks configuration update
+				log.Println("System | Backend servers unchanged")
 			}
-
 		}
 
 	}
@@ -375,4 +371,178 @@ func getNodeIPs() []string {
 
 	return ips
 
+}
+
+// DiscoverK8sServicesForAll discovers services for all load balancers centrally
+func DiscoverK8sServicesForAll(loadBalancers []LoadBalancerInterface, configs []config.Configuration) {
+
+	log.Println("System | Starting centralized service discovery for all load balancers")
+
+	// Get the shared Kubernetes client
+	k8sClient, err := GetSharedClient()
+	if err != nil {
+		log.Printf("System | Failed to get K8s client in centralized discovery: %v", err)
+		return
+	}
+
+	// Create a map of config name to load balancer for quick lookup
+	configToLB := make(map[string]LoadBalancerInterface)
+	for i, config := range configs {
+		if i < len(loadBalancers) {
+			configToLB[config.Name] = loadBalancers[i]
+		}
+	}
+
+	// Main discovery loop
+	for {
+		sleepDuration := time.Duration(defaultHealthCheckInterval) * time.Second
+
+		// Group configs by namespace for efficient API calls
+		namespaceConfigs := make(map[string][]config.Configuration)
+		for _, cfg := range configs {
+			namespace := cfg.Namespace
+			if namespace == "" {
+				namespace = "all" // Special key for all namespaces
+			}
+			namespaceConfigs[namespace] = append(namespaceConfigs[namespace], cfg)
+		}
+
+		// Discover services per namespace
+		for namespace, nsConfigs := range namespaceConfigs {
+			discoverServicesForNamespace(k8sClient, namespace, nsConfigs, configToLB)
+		}
+
+		time.Sleep(sleepDuration)
+	}
+}
+
+// discoverServicesForNamespace discovers services in a specific namespace for centralized discovery
+func discoverServicesForNamespace(k8sClient *Clientset, namespace string, configs []config.Configuration, configToLB map[string]LoadBalancerInterface) {
+	// Use empty string for all namespaces
+	searchNamespace := namespace
+	if namespace == "all" {
+		searchNamespace = ""
+	}
+
+	services, err := k8sClient.CoreV1().Services(searchNamespace).List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		log.Printf("System | Failed to list services in namespace '%s': %v", namespace, err)
+		return
+	}
+
+	// Process each configuration
+	for _, cfg := range configs {
+		backends := processServicesForConfig(services.Items, cfg)
+
+		// Update the corresponding LoadBalancer
+		if lb, exists := configToLB[cfg.Name]; exists {
+			currentBackends := lb.GetBackendServers()
+
+			// Only update if backends changed
+			if !backendsEqual(currentBackends, backends) {
+				lb.SetBackendServers(backends)
+				log.Printf("System | Updated %d backends for config: %s", len(backends), cfg.Name)
+
+				// Start health checks
+				go lb.StartHealthChecks()
+			}
+		}
+	}
+}
+
+// processServicesForConfig processes services for a specific configuration in centralized discovery
+func processServicesForConfig(services []corev1.Service, cfg config.Configuration) []*backend.BackendServer {
+	var backends []*backend.BackendServer
+	backendID := 1
+
+	for _, service := range services {
+		// Check for annotation
+		if enabled, ok := service.Annotations["nautiluslb.cloudresty.io/enabled"]; !ok || enabled != "true" {
+			continue
+		}
+
+		// Skip label selector check - just use annotation + namespace + port name
+		// This allows services without specific labels to be discovered
+
+		// Process the service based on type
+		serviceBackends := processServiceForConfig(service, cfg, &backendID)
+		backends = append(backends, serviceBackends...)
+	}
+
+	return backends
+}
+
+// processServiceForConfig processes a single service for centralized discovery
+func processServiceForConfig(service corev1.Service, cfg config.Configuration, backendID *int) []*backend.BackendServer {
+	var backends []*backend.BackendServer
+
+	switch service.Spec.Type {
+	case corev1.ServiceTypeNodePort, corev1.ServiceTypeLoadBalancer:
+		for _, port := range service.Spec.Ports {
+			if port.Name != cfg.BackendPortName {
+				continue
+			}
+
+			nodeIPs := getNodeIPs()
+			for _, nodeIP := range nodeIPs {
+				backend := &backend.BackendServer{
+					ID:       *backendID,
+					IP:       nodeIP,
+					Port:     int(port.NodePort),
+					PortName: port.Name,
+					Weight:   1,
+					Healthy:  true,
+				}
+				backends = append(backends, backend)
+				*backendID++
+			}
+		}
+
+	case corev1.ServiceTypeClusterIP:
+		for _, port := range service.Spec.Ports {
+			if port.Name != cfg.BackendPortName {
+				continue
+			}
+
+			if port.TargetPort.IntVal > 0 {
+				backend := &backend.BackendServer{
+					ID:       *backendID,
+					IP:       service.Spec.ClusterIP,
+					Port:     int(port.TargetPort.IntVal),
+					PortName: port.Name,
+					Weight:   1,
+					Healthy:  true,
+				}
+				backends = append(backends, backend)
+				*backendID++
+			}
+		}
+
+	default:
+		log.Printf("System | Unsupported service type '%s' for service '%s'", service.Spec.Type, service.Name)
+	}
+
+	return backends
+}
+
+// backendsEqual compares two backend slices for centralized discovery
+func backendsEqual(old, new []*backend.BackendServer) bool {
+	if len(old) != len(new) {
+		return false
+	}
+
+	// Create maps for comparison
+	oldMap := make(map[string]*backend.BackendServer)
+	for _, b := range old {
+		oldMap[fmt.Sprintf("%s:%d", b.IP, b.Port)] = b
+	}
+
+	for _, b := range new {
+		key := fmt.Sprintf("%s:%d", b.IP, b.Port)
+		if _, exists := oldMap[key]; !exists {
+			return false
+		}
+	}
+
+	return true
 }

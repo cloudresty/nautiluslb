@@ -1,22 +1,53 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/cloudresty/nautiluslb/kubernetes"
-
 	"github.com/cloudresty/nautiluslb/loadbalancer"
 	"github.com/cloudresty/nautiluslb/utils"
+	"github.com/cloudresty/nautiluslb/version"
 )
 
 func main() {
 
-	version := "v0.0.6"
+	// Parse command line flags
+	var showHelp = flag.Bool("help", false, "Show help information")
+	var showVersion = flag.Bool("version", false, "Show version information")
+	flag.Parse()
+
+	if *showHelp {
+		fmt.Println("NautilusLB - Kubernetes-native Load Balancer")
+		fmt.Println()
+		fmt.Println("Usage:")
+		fmt.Println("  nautiluslb [options]")
+		fmt.Println()
+		fmt.Println("Options:")
+		fmt.Println("  -help        Show this help message")
+		fmt.Println("  -version     Show version information")
+		fmt.Println()
+		fmt.Println("Configuration:")
+		fmt.Println("  The application reads configuration from config.yaml in the current directory.")
+		fmt.Println("  It automatically discovers Kubernetes services with the annotation:")
+		fmt.Println("  nautiluslb.cloudresty.io/enabled=true")
+		fmt.Println()
+		fmt.Println("For more information, visit: https://github.com/cloudresty/nautiluslb")
+		os.Exit(0)
+	}
+
+	if *showVersion {
+		buildInfo := version.Get()
+		fmt.Println("NautilusLB")
+		fmt.Println(buildInfo.DetailedString())
+		os.Exit(0)
+	}
 
 	asciiArt := `
  _   _             _   _ _           _     ____
@@ -26,7 +57,6 @@ func main() {
 |_| \_|\__,_|\__,_|\__|_|_|\__,_|___/_____|____/
 `
 	fmt.Println(asciiArt)
-	fmt.Println("NautilusLB" + " " + version + " " + "(alpha)")
 	fmt.Println("https://github.com/cloudresty/nautiluslb")
 	fmt.Println()
 	fmt.Println("---")
@@ -53,9 +83,10 @@ func main() {
 	}
 	log.Printf("System | Initialized Kubernetes client using context: %s", currentContext)
 	var wg sync.WaitGroup
+	var loadBalancers []*loadbalancer.LoadBalancer
 
 	//
-	// Create a new load balancer for each backend configuration
+	// Create a new load balancer for each backend configuration (without individual discovery)
 	//
 
 	for _, backendConfig := range configData.BackendConfigurations {
@@ -66,9 +97,7 @@ func main() {
 		duration := time.Duration(backendConfig.RequestTimeout) * time.Second
 
 		lb := loadbalancer.NewLoadBalancer(backendConfig, duration)
-
-		// Start Kubernetes service discovery, passing the client
-		go lb.DiscoverK8sServices()
+		loadBalancers = append(loadBalancers, lb)
 
 		// Start the load balancer
 		go func(lb *loadbalancer.LoadBalancer) {
@@ -80,12 +109,20 @@ func main() {
 
 	}
 
+	// Start centralized service discovery for all load balancers
+	// Convert to interface slice
+	var lbInterfaces []kubernetes.LoadBalancerInterface
+	for _, lb := range loadBalancers {
+		lbInterfaces = append(lbInterfaces, lb)
+	}
+	go kubernetes.DiscoverK8sServicesForAll(lbInterfaces, configData.BackendConfigurations)
+
 	wg.Wait()
 	log.Println("System | All load balancers stopped, exiting")
 
 	// Graceful shutdown on signals
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, os.Kill)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	<-sigChan
 
 	log.Println("System | Shutting down gracefully...")
