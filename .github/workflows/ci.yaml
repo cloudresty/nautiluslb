@@ -59,12 +59,12 @@ jobs:
         name: codecov-umbrella
 
     - name: Build binary
-      run: cd app && go build -v ./...
+      run: cd app && go build -o nautiluslb .
 
     - name: Test build output
       run: |
         cd app
-        ./nautiluslb --help || echo "Binary built successfully (help command may not be available)"
+        ./nautiluslb -help || echo "Binary built successfully (help command may not be available)"
         ls -la nautiluslb
 
   lint:
