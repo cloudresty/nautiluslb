@@ -2,10 +2,11 @@ package backend
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"time"
+
+	"github.com/cloudresty/emit"
 )
 
 // BackendServer represents a backend server.
@@ -44,11 +45,18 @@ func (server *BackendServer) HealthCheck(interval time.Duration) {
 
 			failureCounter++
 
-			log.Printf("System | Backend %s:%d is unhealthy (attempt %d): %v", server.IP, server.Port, failureCounter, err)
+			emit.Warn.StructuredFields("Backend health check failed",
+				emit.ZString("backend_ip", server.IP),
+				emit.ZInt("backend_port", server.Port),
+				emit.ZInt("attempt", failureCounter),
+				emit.ZString("error", err.Error()))
 
 			if failureCounter >= retryLimit && server.Healthy { // Require 3 consecutive failures
 				server.Healthy = false
-				log.Printf("System | Backend %s:%d is now unhealthy (3 consecutive failures)", server.IP, server.Port)
+				emit.Error.StructuredFields("Backend marked as unhealthy",
+					emit.ZString("backend_ip", server.IP),
+					emit.ZInt("backend_port", server.Port),
+					emit.ZString("reason", "3 consecutive failures"))
 			}
 
 		} else {
@@ -57,30 +65,43 @@ func (server *BackendServer) HealthCheck(interval time.Duration) {
 
 			if !server.Healthy {
 				server.Healthy = true
-				log.Printf("System | Backend %s:%d is now healthy", server.IP, server.Port)
+				emit.Info.StructuredFields("Backend recovered to healthy",
+					emit.ZString("backend_ip", server.IP),
+					emit.ZInt("backend_port", server.Port))
 			}
 			if err := conn.Close(); err != nil {
 				// Only log if it's not an expected "already closed" error
 				if !isConnectionClosedError(err) {
-					log.Printf("Warning: Failed to close health check connection: %v", err)
+					emit.Warn.StructuredFields("Failed to close health check connection",
+						emit.ZString("backend_ip", server.IP),
+						emit.ZInt("backend_port", server.Port),
+						emit.ZString("error", err.Error()))
 				}
 			}
 
 			if !server.Healthy {
 				server.Healthy = true
-				log.Printf("System | Backend %s:%d is now healthy", server.IP, server.Port)
+				emit.Info.StructuredFields("Backend recovered to healthy (duplicate)",
+					emit.ZString("backend_ip", server.IP),
+					emit.ZInt("backend_port", server.Port))
 			}
 
 		}
 		if err := conn.Close(); err != nil {
 			// Only log if it's not an expected "already closed" error
 			if !isConnectionClosedError(err) {
-				log.Printf("Warning: Failed to close health check connection: %v", err)
+				emit.Warn.StructuredFields("Failed to close health check connection (duplicate)",
+					emit.ZString("backend_ip", server.IP),
+					emit.ZInt("backend_port", server.Port),
+					emit.ZString("error", err.Error()))
 			}
 		}
 
 		if healthChanged {
-			log.Printf("System | Backend %s:%d is %s", server.IP, server.Port, server.healthStatus())
+			emit.Debug.StructuredFields("Backend health status",
+				emit.ZString("backend_ip", server.IP),
+				emit.ZInt("backend_port", server.Port),
+				emit.ZString("status", server.healthStatus()))
 		}
 
 		lastCheck = time.Now()

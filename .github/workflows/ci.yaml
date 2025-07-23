@@ -116,39 +116,15 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
 
-    - name: Get version information
-      id: version
-      run: |
-        GIT_TAG=$(git describe --tags --exact-match 2>/dev/null || echo "")
-        GIT_COMMIT=$(git rev-parse --short HEAD)
-        BUILD_TIME=$(date -u '+%Y-%m-%d_%H:%M:%S_UTC')
-
-        if [ ! -z "$GIT_TAG" ]; then
-          VERSION="$GIT_TAG"
-        else
-          GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          VERSION="${GIT_BRANCH}-${GIT_COMMIT}"
-        fi
-
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "git_tag=$GIT_TAG" >> $GITHUB_OUTPUT
-        echo "git_commit=$GIT_COMMIT" >> $GITHUB_OUTPUT
-        echo "build_time=$BUILD_TIME" >> $GITHUB_OUTPUT
-
     - name: Build Docker image
       uses: docker/build-push-action@v5
       with:
         context: .
         file: ./build/Dockerfile
         push: false
-        tags: cloudresty/nautiluslb:${{ steps.version.outputs.version }}
+        tags: cloudresty/nautiluslb:latest
         cache-from: type=gha
         cache-to: type=gha,mode=max
-        build-args: |
-          VERSION=${{ steps.version.outputs.version }}
-          GIT_COMMIT=${{ steps.version.outputs.git_commit }}
-          BUILD_TIME=${{ steps.version.outputs.build_time }}
-          GIT_TAG=${{ steps.version.outputs.git_tag }}
 
   integration:
     runs-on: ubuntu-latest

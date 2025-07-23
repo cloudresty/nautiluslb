@@ -2,11 +2,12 @@ package backend
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cloudresty/emit"
 )
 
 func TestBackendServerCreation(t *testing.T) {
@@ -112,7 +113,8 @@ func TestBackendServerHealthCheckWithMockServer(t *testing.T) {
 				return
 			}
 			if err := conn.Close(); err != nil {
-				log.Printf("Warning: Failed to close test connection: %v", err)
+				emit.Warn.StructuredFields("Failed to close test connection",
+					emit.ZString("error", err.Error()))
 			}
 		}
 	}()

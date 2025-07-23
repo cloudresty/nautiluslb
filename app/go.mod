@@ -3,6 +3,7 @@ module github.com/cloudresty/nautiluslb
 go 1.24.2
 
 require (
+	github.com/cloudresty/emit v1.2.5
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.33.0
 	k8s.io/apimachinery v0.33.0

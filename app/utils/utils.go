@@ -2,11 +2,11 @@ package utils
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"os"
 	"strings"
 
+	"github.com/cloudresty/emit"
 	"github.com/cloudresty/nautiluslb/config"
 	"gopkg.in/yaml.v3"
 )
@@ -60,7 +60,9 @@ func LoadConfig(filename string) (config.Config, error) {
 			return config.Config{}, fmt.Errorf("invalid backend configuration at index %d: %v", i, err)
 		}
 
-		log.Printf("System | Loaded configuration: %s > %s", bc.Name, ExtractPort(bc.ListenerAddress))
+		emit.Info.StructuredFields("Loaded configuration",
+			emit.ZString("config_name", bc.Name),
+			emit.ZString("listener_port", ExtractPort(bc.ListenerAddress)))
 
 	}
 

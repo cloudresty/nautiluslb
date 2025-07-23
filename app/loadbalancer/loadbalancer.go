@@ -3,11 +3,11 @@ package loadbalancer
 import (
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"time"
 
+	"github.com/cloudresty/emit"
 	"github.com/cloudresty/nautiluslb/backend"
 	"github.com/cloudresty/nautiluslb/config"
 	"github.com/cloudresty/nautiluslb/kubernetes"
@@ -57,13 +57,18 @@ func (lb *LoadBalancer) Start() {
 	var err error
 	lb.Listener, err = net.Listen("tcp", lb.listenerAddr)
 	if err != nil {
-		log.Fatalf("System | Failed to listen on port '%s': %v", utils.ExtractPort(lb.listenerAddr), err)
+		emit.Error.StructuredFields("Failed to listen on port",
+			emit.ZString("port", utils.ExtractPort(lb.listenerAddr)),
+			emit.ZString("error", err.Error()))
+		// Since this is a fatal error, we should exit
+		panic(fmt.Sprintf("Failed to listen on port '%s': %v", utils.ExtractPort(lb.listenerAddr), err))
 	}
 
 	listener := lb.GetListener()
 
 	if listener == nil {
-		log.Fatalf("System | Listener is not initialized")
+		emit.Error.Msg("Listener is not initialized")
+		panic("Listener is not initialized")
 	}
 
 	// Accept incoming connections
@@ -72,12 +77,14 @@ func (lb *LoadBalancer) Start() {
 		select {
 
 		case <-lb.stopChan:
-			log.Printf("System | Stop signal received, closing listener for '%s'", lb.listenerAddr)
+			emit.Info.StructuredFields("Stop signal received, closing listener",
+				emit.ZString("listener_addr", lb.listenerAddr))
 			return
 		default:
 			conn, err := listener.Accept()
 			if err != nil {
-				log.Printf("System | Failed to accept connection '%v'", err)
+				emit.Error.StructuredFields("Failed to accept connection",
+					emit.ZString("error", err.Error()))
 				continue
 			}
 
@@ -94,20 +101,24 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 
 	defer func() {
 		if err := conn.Close(); err != nil {
-			log.Printf("Warning: Failed to close client connection: %v", err)
+			emit.Warn.StructuredFields("Failed to close client connection",
+				emit.ZString("error", err.Error()))
 		}
 	}()
 
 	// Get the client IP address
 	clientIP, _, err := net.SplitHostPort(conn.RemoteAddr().String())
 	if err != nil {
-		log.Printf("System | Failed to get client IP: %v", err)
+		emit.Error.StructuredFields("Failed to get client IP",
+			emit.ZString("error", err.Error()))
 		clientIP = "unknown"
 	}
 
 	// Get the listener port
 	listenerPort := conn.LocalAddr().(*net.TCPAddr).Port
-	log.Printf("Client | Received request: %s:%d", clientIP, listenerPort)
+	emit.Info.StructuredFields("Received client request",
+		emit.ZString("client_ip", clientIP),
+		emit.ZInt("listener_port", listenerPort))
 
 	lb.mu.Lock()
 	// log.Printf("Selecting backend for listener port '%d'", listenerPort)
@@ -117,11 +128,18 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 	if backend == nil {
 
 		// No healthy backends
-		log.Printf("System | No healthy backends for: %s:%d", clientIP, listenerPort)
+		emit.Error.StructuredFields("No healthy backends available",
+			emit.ZString("client_ip", clientIP),
+			emit.ZInt("listener_port", listenerPort))
 		return
 	}
 
-	log.Printf("Client | Forwarding traffic: %s:%d -> %s -> %s:%d", clientIP, listenerPort, lb.config.Name, backend.IP, backend.Port)
+	emit.Info.StructuredFields("Forwarding client traffic to backend",
+		emit.ZString("client_ip", clientIP),
+		emit.ZInt("listener_port", listenerPort),
+		emit.ZString("loadbalancer", lb.config.Name),
+		emit.ZString("backend_ip", backend.IP),
+		emit.ZInt("backend_port", backend.Port))
 	backend.ActiveConnections++
 
 	defer func() {
@@ -137,14 +155,24 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 	if err != nil {
 
 		// Handle backend connection error
-		log.Printf("System | Failed to connect to backend '%s:%d' for client '%s': %v", backend.IP, backend.Port, clientIP, err)
+		emit.Error.StructuredFields("Failed to connect to backend",
+			emit.ZString("backend_ip", backend.IP),
+			emit.ZInt("backend_port", backend.Port),
+			emit.ZString("client_ip", clientIP),
+			emit.ZString("error", err.Error()))
 
 		// Check for specific error types and log accordingly
 		if opErr, ok := err.(*net.OpError); ok {
 			if opErr.Op == "dial" && opErr.Net == "tcp" {
-				log.Printf("System | Connection refused to backend '%s:%d': %v", backend.IP, backend.Port, opErr.Err)
+				emit.Error.StructuredFields("Connection refused to backend",
+					emit.ZString("backend_ip", backend.IP),
+					emit.ZInt("backend_port", backend.Port),
+					emit.ZString("error", opErr.Err.Error()))
 			} else {
-				log.Printf("System | Network error connecting to backend '%s:%d': %v", backend.IP, backend.Port, opErr.Err)
+				emit.Error.StructuredFields("Network error connecting to backend",
+					emit.ZString("backend_ip", backend.IP),
+					emit.ZInt("backend_port", backend.Port),
+					emit.ZString("error", opErr.Err.Error()))
 			}
 		}
 
@@ -164,7 +192,8 @@ func (lb *LoadBalancer) HandleConnection(conn net.Conn) {
 	// log.Printf("Waiting for data transfer to complete between '%s' and backend '%s:%d'", clientIP, backend.IP, backend.Port)
 	defer func() {
 		if err := backendConn.Close(); err != nil {
-			log.Printf("Warning: Failed to close backend connection: %v", err)
+			emit.Warn.StructuredFields("Failed to close backend connection",
+				emit.ZString("error", err.Error()))
 		}
 	}()
 	// log.Printf("Data transfer complete between '%s' and backend '%s:%d'", clientIP, backend.IP, backend.Port)
@@ -181,12 +210,15 @@ func copyData(dst net.Conn, src net.Conn, wg *sync.WaitGroup, direction string) 
 	_, err := io.Copy(dst, src)
 	if err != nil && err != io.EOF {
 
-		log.Printf("System | Error copying data '%s': %v", direction, err)
+		emit.Error.StructuredFields("Error copying data between connections",
+			emit.ZString("direction", direction),
+			emit.ZString("error", err.Error()))
 
 		// Close the destination connection to signal the error
 		if closer, ok := dst.(interface{ CloseWrite() error }); ok {
 			if err := closer.CloseWrite(); err != nil {
-				log.Printf("Warning: Failed to close write connection: %v", err)
+				emit.Warn.StructuredFields("Failed to close write connection",
+					emit.ZString("error", err.Error()))
 			}
 		}
 
@@ -225,7 +257,8 @@ func (lb *LoadBalancer) getNextBackend() *backend.BackendServer {
 		}
 
 		if len(filteredBackends) == 0 {
-			log.Printf("System | No healthy backends available for configuration '%s'", lb.config.Name)
+			emit.Warn.StructuredFields("No healthy backends available",
+				emit.ZString("configuration", lb.config.Name))
 			return nil
 		}
 
@@ -263,8 +296,9 @@ func (lb *LoadBalancer) runHealthCheck(server *backend.BackendServer) {
 	lb.mu.Lock()
 
 	if _, ok := lb.healthCheckMap[fmt.Sprintf("%s:%d", server.IP, server.Port)]; ok {
-		log.Printf("System | Health check already running for %s:%d",
-			server.IP, server.Port)
+		emit.Debug.StructuredFields("Health check already running for backend",
+			emit.ZString("backend_ip", server.IP),
+			emit.ZInt("backend_port", server.Port))
 		lb.mu.Unlock()
 		return
 	}
@@ -277,7 +311,10 @@ func (lb *LoadBalancer) runHealthCheck(server *backend.BackendServer) {
 	// Check if the health check is already in the cache
 	if _, exists := lb.healthCheckCache[fmt.Sprintf("%s:%d", server.IP, server.Port)]; !exists {
 
-		log.Printf("System | Health check: %s:%d / %ds", server.IP, server.Port, 10)
+		emit.Info.StructuredFields("Starting health check for backend",
+			emit.ZString("backend_ip", server.IP),
+			emit.ZInt("backend_port", server.Port),
+			emit.ZInt("interval_seconds", 10))
 		lb.healthCheckCache[fmt.Sprintf("%s:%d", server.IP, server.Port)] = true
 
 	}
@@ -301,7 +338,8 @@ func (lb *LoadBalancer) StopHealthChecks() {
 		// Not closed yet, safe to close
 	}
 
-	log.Printf("System | Stopping health checks for %s", lb.listenerAddr)
+	emit.Info.StructuredFields("Stopping health checks",
+		emit.ZString("listener_addr", lb.listenerAddr))
 	close(lb.stopHealthChecks)
 
 }
@@ -357,9 +395,11 @@ func (lb *LoadBalancer) Stop() {
 
 	if lb.Listener != nil {
 		if err := lb.Listener.Close(); err != nil {
-			log.Printf("Warning: Failed to close listener: %v", err)
+			emit.Warn.StructuredFields("Failed to close listener",
+				emit.ZString("error", err.Error()))
 		}
-		log.Printf("System | Stopped listening on port: %s", utils.ExtractPort(lb.listenerAddr))
+		emit.Info.StructuredFields("Stopped listening on port",
+			emit.ZString("port", utils.ExtractPort(lb.listenerAddr)))
 	}
 
 	lb.Listener = nil
@@ -376,7 +416,7 @@ func (lb *LoadBalancer) Stop() {
 	for {
 		select {
 		case <-timeout:
-			log.Printf("System | Timeout waiting for health checks to stop")
+			emit.Warn.StructuredFields("Timeout waiting for health checks to stop")
 			return
 		case <-ticker.C:
 			if lb.areHealthChecksStopped() {

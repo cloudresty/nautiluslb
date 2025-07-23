@@ -3,7 +3,6 @@ package kubernetes
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/cloudresty/emit"
 	"github.com/cloudresty/nautiluslb/backend"
 	"github.com/cloudresty/nautiluslb/config"
 )
@@ -55,17 +55,18 @@ func GetK8sClient(kubeconfigPath string) (*kubernetes.Clientset, string, error) 
 	config, err := rest.InClusterConfig()
 	if err == nil {
 
-		log.Println("System | Using in-cluster Kubernetes config")
+		emit.Info.Msg("Using in-cluster Kubernetes config")
 		currentContext = "in-cluster"
 
 	} else {
 
-		log.Println("System | Failed to get in-cluster config:", err)
+		emit.Debug.StructuredFields("Failed to get in-cluster config",
+			emit.ZString("error", err.Error()))
 
 		// Fallback to kubeconfig file
 		if kubeconfigPath == "" {
 
-			log.Println("System | KUBECONFIG environment variable not set, using default ~/.kube/config")
+			emit.Debug.Msg("KUBECONFIG environment variable not set, using default ~/.kube/config")
 
 			home, err := os.UserHomeDir()
 			if err != nil {
@@ -76,7 +77,8 @@ func GetK8sClient(kubeconfigPath string) (*kubernetes.Clientset, string, error) 
 
 		} else {
 
-			log.Printf("System | Using KUBECONFIG: %s", kubeconfigPath)
+			emit.Debug.StructuredFields("Using KUBECONFIG",
+				emit.ZString("kubeconfig_path", kubeconfigPath))
 
 		}
 
@@ -162,7 +164,9 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 			services, err := k8sClient.CoreV1().Services(namespace).List(context.TODO(), metav1.ListOptions{})
 
 			if err != nil {
-				log.Printf("System | Failed to list services in namespace '%s': %v", namespace, err)
+				emit.Error.StructuredFields("Failed to list services",
+					emit.ZString("namespace", namespace),
+					emit.ZString("error", err.Error()))
 				continue
 			}
 
@@ -216,7 +220,11 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 								// Update the cache with the new backend information
 								existingBackend, ok := backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)]
 								if ok && (existingBackend.IP != backend.IP || existingBackend.Port != backend.Port) {
-									log.Printf("System | Updating backend: %s >%s > %s:%d'", service.Name, serviceType, backend.IP, backend.Port)
+									emit.Debug.StructuredFields("Updating backend",
+										emit.ZString("service_name", service.Name),
+										emit.ZString("service_type", serviceType),
+										emit.ZString("backend_ip", backend.IP),
+										emit.ZInt("backend_port", backend.Port))
 									backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = *backend
 								}
 
@@ -234,7 +242,9 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 
 							for _, port := range service.Spec.Ports {
 
-								log.Printf("Found ClusterIP port: %s - TargetPort: %d", port.Name, port.TargetPort.IntVal)
+								emit.Debug.StructuredFields("Found ClusterIP port",
+									emit.ZString("port_name", port.Name),
+									emit.ZInt("target_port", int(port.TargetPort.IntVal)))
 
 								if port.TargetPort.IntVal > 0 {
 
@@ -254,7 +264,8 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 
 								} else {
 
-									log.Printf("Skipping port '%s' because TargetPort is not defined or invalid.", port.Name)
+									emit.Warn.StructuredFields("Skipping port - TargetPort not defined",
+										emit.ZString("port_name", port.Name))
 
 								}
 
@@ -262,12 +273,15 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 
 						} else {
 
-							log.Printf("No ports found for ClusterIP service '%s'", service.Name)
+							emit.Warn.StructuredFields("No ports found for ClusterIP service",
+								emit.ZString("service_name", service.Name))
 
 						}
 
 					default:
-						log.Printf("System | Service type '%s' not supported for service '%s'", service.Spec.Type, service.Name)
+						emit.Warn.StructuredFields("Service type not supported",
+							emit.ZString("service_type", string(service.Spec.Type)),
+							emit.ZString("service_name", service.Name))
 
 					}
 
@@ -334,13 +348,13 @@ func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) 
 
 			if backendsChanged {
 
-				log.Println("System | Backend servers changed, updating background health checks")
+				emit.Info.Msg("Backend servers changed, updating background health checks")
 				lb.StartHealthChecks()
-				log.Println("System | Background health checks configuration updated")
+				emit.Info.Msg("Background health checks configuration updated")
 
 			} else {
 				// Backend servers unchanged, skipping background health checks configuration update
-				log.Println("System | Backend servers unchanged")
+				emit.Debug.Msg("Backend servers unchanged")
 			}
 		}
 
@@ -354,7 +368,8 @@ func getNodeIPs() []string {
 
 	nodes, err := sharedK8sClient.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		log.Printf("System | Failed to list nodes: %v", err)
+		emit.Error.StructuredFields("Failed to list nodes",
+			emit.ZString("error", err.Error()))
 		return []string{}
 	}
 
@@ -376,12 +391,13 @@ func getNodeIPs() []string {
 // DiscoverK8sServicesForAll discovers services for all load balancers centrally
 func DiscoverK8sServicesForAll(loadBalancers []LoadBalancerInterface, configs []config.Configuration) {
 
-	log.Println("System | Starting centralized service discovery for all load balancers")
+	emit.Info.Msg("Starting centralized service discovery for all load balancers")
 
 	// Get the shared Kubernetes client
 	k8sClient, err := GetSharedClient()
 	if err != nil {
-		log.Printf("System | Failed to get K8s client in centralized discovery: %v", err)
+		emit.Error.StructuredFields("Failed to get K8s client in centralized discovery",
+			emit.ZString("error", err.Error()))
 		return
 	}
 
@@ -426,7 +442,9 @@ func discoverServicesForNamespace(k8sClient *Clientset, namespace string, config
 
 	services, err := k8sClient.CoreV1().Services(searchNamespace).List(context.TODO(), metav1.ListOptions{})
 	if err != nil {
-		log.Printf("System | Failed to list services in namespace '%s': %v", namespace, err)
+		emit.Error.StructuredFields("Failed to list services in centralized discovery",
+			emit.ZString("namespace", namespace),
+			emit.ZString("error", err.Error()))
 		return
 	}
 
@@ -441,7 +459,9 @@ func discoverServicesForNamespace(k8sClient *Clientset, namespace string, config
 			// Only update if backends changed
 			if !backendsEqual(currentBackends, backends) {
 				lb.SetBackendServers(backends)
-				log.Printf("System | Updated %d backends for config: %s", len(backends), cfg.Name)
+				emit.Info.StructuredFields("Updated backends for config",
+					emit.ZInt("backend_count", len(backends)),
+					emit.ZString("config_name", cfg.Name))
 
 				// Start health checks
 				go lb.StartHealthChecks()
@@ -519,7 +539,9 @@ func processServiceForConfig(service corev1.Service, cfg config.Configuration, b
 		}
 
 	default:
-		log.Printf("System | Unsupported service type '%s' for service '%s'", service.Spec.Type, service.Name)
+		emit.Warn.StructuredFields("Unsupported service type in centralized discovery",
+			emit.ZString("service_type", string(service.Spec.Type)),
+			emit.ZString("service_name", service.Name))
 	}
 
 	return backends
