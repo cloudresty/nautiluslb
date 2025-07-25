@@ -4,7 +4,6 @@ NautilusLB is an open-source Layer 4 (TCP) load balancer designed for high avail
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/cloudresty/nautiluslb.svg)](https://pkg.go.dev/github.com/cloudresty/nautiluslb)
 [![Go Tests](https://github.com/cloudresty/nautiluslb/actions/workflows/ci.yaml/badge.svg)](https://github.com/cloudresty/nautiluslb/actions/workflows/ci.yaml)
-[![Go Report Card](https://goreportcard.com/badge/github.com/cloudresty/nautiluslb)](https://goreportcard.com/report/github.com/cloudresty/nautiluslb)
 [![GitHub Tag](https://img.shields.io/github/v/tag/cloudresty/nautiluslb?label=Version)](https://github.com/cloudresty/nautiluslb/tags)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 
