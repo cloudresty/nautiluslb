@@ -2,7 +2,6 @@
 
 NautilusLB is an open-source Layer 4 (TCP) load balancer designed for high availability and scalability in Kubernetes environments. It intelligently distributes incoming TCP traffic across multiple backend servers based on Kubernetes service definitions and custom annotations.
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/cloudresty/nautiluslb.svg)](https://pkg.go.dev/github.com/cloudresty/nautiluslb)
 [![Go Tests](https://github.com/cloudresty/nautiluslb/actions/workflows/ci.yaml/badge.svg)](https://github.com/cloudresty/nautiluslb/actions/workflows/ci.yaml)
 [![GitHub Tag](https://img.shields.io/github/v/tag/cloudresty/nautiluslb?label=Version)](https://github.com/cloudresty/nautiluslb/tags)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
@@ -361,6 +360,6 @@ Contributions are welcome! Please see the [CONTRIBUTING.md](CONTRIBUTING.md) fil
 
 An open source project brought to you by the [Cloudresty](https://cloudresty.com) team.
 
-[Website](https://cloudresty.com) &nbsp;|&nbsp; [LinkedIn](https://www.linkedin.com/company/cloudresty) &nbsp;|&nbsp; [BlueSky](https://bsky.app/profile/cloudresty.com) &nbsp;|&nbsp; [GitHub](https://github.com/cloudresty)
+[Website](https://cloudresty.com) &nbsp;|&nbsp; [LinkedIn](https://www.linkedin.com/company/cloudresty) &nbsp;|&nbsp; [BlueSky](https://bsky.app/profile/cloudresty.com) &nbsp;|&nbsp; [GitHub](https://github.com/cloudresty) &nbsp;|&nbsp; [Docker Hub](https://hub.docker.com/r/cloudresty/)
 
 &nbsp;
