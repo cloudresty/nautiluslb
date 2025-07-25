@@ -51,6 +51,7 @@ func (server *BackendServer) HealthCheck(interval time.Duration) {
 
 			if failureCounter >= retryLimit && server.Healthy { // Require 3 consecutive failures
 				server.Healthy = false
+				healthChanged = true
 				emit.Error.StructuredFields("Backend marked as unhealthy",
 					emit.ZString("backend_ip", server.IP),
 					emit.ZInt("backend_port", server.Port),
@@ -63,10 +64,13 @@ func (server *BackendServer) HealthCheck(interval time.Duration) {
 
 			if !server.Healthy {
 				server.Healthy = true
+				healthChanged = true
 				emit.Info.StructuredFields("Backend recovered to healthy",
 					emit.ZString("backend_ip", server.IP),
 					emit.ZInt("backend_port", server.Port))
 			}
+
+			// Close the connection only if it was successfully created
 			if err := conn.Close(); err != nil {
 				// Only log if it's not an expected "already closed" error
 				if !isConnectionClosedError(err) {
@@ -77,22 +81,6 @@ func (server *BackendServer) HealthCheck(interval time.Duration) {
 				}
 			}
 
-			if !server.Healthy {
-				server.Healthy = true
-				emit.Info.StructuredFields("Backend recovered to healthy (duplicate)",
-					emit.ZString("backend_ip", server.IP),
-					emit.ZInt("backend_port", server.Port))
-			}
-
-		}
-		if err := conn.Close(); err != nil {
-			// Only log if it's not an expected "already closed" error
-			if !isConnectionClosedError(err) {
-				emit.Warn.StructuredFields("Failed to close health check connection (duplicate)",
-					emit.ZString("backend_ip", server.IP),
-					emit.ZInt("backend_port", server.Port),
-					emit.ZString("error", err.Error()))
-			}
 		}
 
 		if healthChanged {
