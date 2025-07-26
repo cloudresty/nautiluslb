@@ -208,16 +208,16 @@ jobs:
         password: ${{ secrets.CLR__DOCKER_HUB_PAT }}
 
     - name: Build and push Docker image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v6
       with:
         context: .
         file: ./build/Dockerfile
         push: true
         tags: |
-          cloudresty/nautiluslb:${{ steps.version.outputs.tag }}
           cloudresty/nautiluslb:latest
-        cache-from: type=registry,ref=cloudresty/nautiluslb:buildcache
-        cache-to: type=registry,ref=cloudresty/nautiluslb:buildcache,mode=max
+          cloudresty/nautiluslb:${{ steps.version.outputs.tag }}
+        cache-from: type=registry,ref=cloudresty/nautiluslb:latest
+        cache-to: type=inline
         platforms: linux/amd64,linux/arm64
 
     - name: Image digest
