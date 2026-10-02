@@ -1,4 +1,4 @@
-package kubernetes
+package discovery
 
 import (
 	"context"
@@ -17,8 +17,8 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/cloudresty/emit"
-	"github.com/cloudresty/nautiluslb/backend"
-	"github.com/cloudresty/nautiluslb/config"
+	"github.com/cloudresty/nautiluslb/internal/backend"
+	"github.com/cloudresty/nautiluslb/internal/config"
 )
 
 // Clientset is an alias for kubernetes.Clientset

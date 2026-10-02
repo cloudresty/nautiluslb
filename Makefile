@@ -3,6 +3,11 @@ NAME = $$(awk -F'/' '{print $$(NF-0)}' <<< $$PWD)
 DOCKER_REPO = ${BASE}/${NAME}
 DOCKER_TAG = test
 GOVULNCHECK_VERSION = v1.8.0
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION_PKG = github.com/cloudresty/nautiluslb/internal/version
+LDFLAGS = -X $(VERSION_PKG).Version=$(VERSION) -X $(VERSION_PKG).Commit=$(COMMIT) -X $(VERSION_PKG).BuildDate=$(BUILD_DATE)
 
 .PHONY: help build build-local run shell clean test lint vuln e2e docker-build
 
@@ -12,7 +17,7 @@ help: ## Show list of make targets and their description.
 
 build-local: ## Build the binary locally.
 	@echo "Building NautilusLB locally..."
-	@cd app && go build -o ../nautiluslb .
+	@cd app && go build -ldflags "$(LDFLAGS)" -o ../nautiluslb ./cmd/nautiluslb
 
 build: ## Build a docker image locally.
 	@echo "Building Docker image..."
@@ -20,6 +25,9 @@ build: ## Build a docker image locally.
 		--platform linux/amd64 \
 		--pull \
 		--force-rm \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg COMMIT=$(COMMIT) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		--tag ${DOCKER_REPO}:${DOCKER_TAG} \
 		--file build/Dockerfile .
 

@@ -1,4 +1,4 @@
-package kubernetes
+package discovery
 
 import (
 	"context"
@@ -15,8 +15,8 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 
-	"github.com/cloudresty/nautiluslb/backend"
-	"github.com/cloudresty/nautiluslb/config"
+	"github.com/cloudresty/nautiluslb/internal/backend"
+	"github.com/cloudresty/nautiluslb/internal/config"
 )
 
 func TestBackendsEqual(t *testing.T) {

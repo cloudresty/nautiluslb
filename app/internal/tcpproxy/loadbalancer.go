@@ -1,4 +1,4 @@
-package loadbalancer
+package tcpproxy
 
 import (
 	"context"
@@ -12,9 +12,8 @@ import (
 	"time"
 
 	"github.com/cloudresty/emit"
-	"github.com/cloudresty/nautiluslb/backend"
-	"github.com/cloudresty/nautiluslb/config"
-	"github.com/cloudresty/nautiluslb/utils"
+	"github.com/cloudresty/nautiluslb/internal/backend"
+	"github.com/cloudresty/nautiluslb/internal/config"
 )
 
 const (
@@ -643,11 +642,17 @@ func (lb *LoadBalancer) Stop() {
 					emit.ZString("error", err.Error()))
 			}
 			emit.Info.StructuredFields("Stopped listening on port",
-				emit.ZString("port", utils.ExtractPort(lb.ListenerAddress)))
+				emit.ZString("port", listenerPort(lb.ListenerAddress)))
 		}
 
 		lb.StopHealthChecks()
 
 	})
 
+}
+
+// listenerPort returns the port of a host:port listener address, for logging.
+func listenerPort(addr string) string {
+	_, port, _ := net.SplitHostPort(addr)
+	return port
 }

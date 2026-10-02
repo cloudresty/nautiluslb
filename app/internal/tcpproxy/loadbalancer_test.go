@@ -1,4 +1,4 @@
-package loadbalancer
+package tcpproxy
 
 import (
 	"bytes"
@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudresty/nautiluslb/backend"
-	"github.com/cloudresty/nautiluslb/config"
+	"github.com/cloudresty/nautiluslb/internal/backend"
+	"github.com/cloudresty/nautiluslb/internal/config"
 )
 
 func testConfig() config.Configuration {

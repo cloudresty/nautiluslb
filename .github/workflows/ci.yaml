@@ -73,8 +73,9 @@ jobs:
 
       - name: Build binary
         run: |
-          go build -trimpath -o nautiluslb .
+          go build -trimpath -o nautiluslb ./cmd/nautiluslb
           ./nautiluslb -help
+          ./nautiluslb --version
 
   lint:
     runs-on: ubuntu-latest
@@ -132,6 +133,9 @@ jobs:
           file: ./build/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: false
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
           tags: cloudresty/nautiluslb:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -196,6 +200,9 @@ jobs:
           file: ./build/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
           tags: ${{ steps.tags.outputs.list }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

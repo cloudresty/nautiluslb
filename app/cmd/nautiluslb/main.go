@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"sync"
@@ -11,10 +12,10 @@ import (
 	"time"
 
 	"github.com/cloudresty/emit"
-	"github.com/cloudresty/nautiluslb/config"
-	"github.com/cloudresty/nautiluslb/kubernetes"
-	"github.com/cloudresty/nautiluslb/loadbalancer"
-	"github.com/cloudresty/nautiluslb/utils"
+	"github.com/cloudresty/nautiluslb/internal/config"
+	"github.com/cloudresty/nautiluslb/internal/discovery"
+	"github.com/cloudresty/nautiluslb/internal/tcpproxy"
+	"github.com/cloudresty/nautiluslb/internal/version"
 )
 
 func main() {
@@ -24,7 +25,18 @@ func main() {
 
 	// Parse command line flags
 	var showHelp = flag.Bool("help", false, "Show help information")
+	var showVersion = flag.Bool("version", false, "Print version and exit")
+	defaultConfig := "config.yaml"
+	if env := os.Getenv("NLB_CONFIG"); env != "" {
+		defaultConfig = env
+	}
+	var configPath = flag.String("config", defaultConfig, "Path to the configuration file (env NLB_CONFIG sets the default)")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version.String())
+		os.Exit(0)
+	}
 
 	if *showHelp {
 		fmt.Println("NautilusLB - Kubernetes-native Load Balancer")
@@ -34,9 +46,11 @@ func main() {
 		fmt.Println()
 		fmt.Println("Options:")
 		fmt.Println("  -help        Show this help message")
+		fmt.Println("  -config      Path to the configuration file (default config.yaml, env NLB_CONFIG)")
+		fmt.Println("  -version     Print version and exit")
 		fmt.Println()
 		fmt.Println("Configuration:")
-		fmt.Println("  The application reads configuration from config.yaml in the current directory.")
+		fmt.Println("  The application reads configuration from the --config file (default config.yaml in the current directory).")
 		fmt.Println("  Each configuration must list the namespaces it discovers Services in")
 		fmt.Println("  (namespaces: [a, b]), or namespaces: [\"*\"] for cluster-wide discovery.")
 		fmt.Println()
@@ -55,17 +69,18 @@ func main() {
 	emit.Info.Msg("Starting NautilusLB...")
 	emit.Info.StructuredFields("Application Information",
 		emit.ZString("app_name", "NautilusLB"),
-		emit.ZString("repository", "https://github.com/cloudresty/nautiluslb"))
+		emit.ZString("repository", "https://github.com/cloudresty/nautiluslb"),
+		emit.ZString("version", version.String()))
 	emit.Info.Msg("Loading configuration...")
 
 	//
 	// Load configuration from YAML file
 	//
 
-	configData, err := utils.LoadConfig("config.yaml")
+	configData, err := config.Load(*configPath)
 	if err != nil {
 		emit.Error.StructuredFields("Failed to load configuration",
-			emit.ZString("config_file", "config.yaml"),
+			emit.ZString("config_file", *configPath),
 			emit.ZString("error", err.Error()))
 		os.Exit(1)
 	}
@@ -74,7 +89,7 @@ func main() {
 	// Initialize Kubernetes client
 	//
 
-	_, currentContext, err := kubernetes.GetK8sClient(configData.Settings.KubeconfigPath)
+	_, currentContext, err := discovery.GetK8sClient(configData.Settings.KubeconfigPath)
 	if err != nil {
 		emit.Error.StructuredFields("Failed to initialize Kubernetes client",
 			emit.ZString("kubeconfig_path", configData.Settings.KubeconfigPath),
@@ -89,7 +104,7 @@ func main() {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	var wg sync.WaitGroup
-	var loadBalancers []*loadbalancer.LoadBalancer
+	var loadBalancers []*tcpproxy.LoadBalancer
 
 	//
 	// Create a new load balancer for each backend configuration
@@ -100,7 +115,7 @@ func main() {
 		// Parse the duration string into a time.Duration
 		duration := time.Duration(backendConfig.RequestTimeout) * time.Second
 
-		loadBalancers = append(loadBalancers, loadbalancer.NewLoadBalancer(backendConfig, duration))
+		loadBalancers = append(loadBalancers, tcpproxy.NewLoadBalancer(backendConfig, duration))
 
 	}
 
@@ -116,20 +131,20 @@ func main() {
 	for i, lb := range loadBalancers {
 
 		wg.Add(1)
-		go func(lb *loadbalancer.LoadBalancer) {
+		go func(lb *tcpproxy.LoadBalancer) {
 			defer wg.Done()
 			lb.Start()
 		}(lb)
 
 		emit.Info.StructuredFields("Started load balancer",
 			emit.ZString("config_name", configData.BackendConfigurations[i].Name),
-			emit.ZString("listener_port", utils.ExtractPort(lb.ListenerAddress)))
+			emit.ZString("listener_port", listenerPort(lb.ListenerAddress)))
 
 	}
 
 	// Start centralized service discovery for all load balancers
 	discoveryCtx, stopDiscovery := context.WithCancel(context.Background())
-	var lbInterfaces []kubernetes.LoadBalancerInterface
+	var lbInterfaces []discovery.LoadBalancerInterface
 	for _, lb := range loadBalancers {
 		lbInterfaces = append(lbInterfaces, lb)
 	}
@@ -138,7 +153,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		defer close(discoveryDone)
-		kubernetes.DiscoverK8sServicesForAll(discoveryCtx, lbInterfaces, configData.BackendConfigurations)
+		discovery.DiscoverK8sServicesForAll(discoveryCtx, lbInterfaces, configData.BackendConfigurations)
 	}()
 
 	sig := <-sigChan
@@ -172,7 +187,7 @@ func main() {
 
 // bindAll binds every load balancer's listener. If any bind fails, the ones
 // already bound are stopped, and the failing listener address is returned.
-func bindAll(loadBalancers []*loadbalancer.LoadBalancer) (string, error) {
+func bindAll(loadBalancers []*tcpproxy.LoadBalancer) (string, error) {
 
 	for i, lb := range loadBalancers {
 		if err := lb.Listen(); err != nil {
@@ -185,4 +200,10 @@ func bindAll(loadBalancers []*loadbalancer.LoadBalancer) (string, error) {
 
 	return "", nil
 
+}
+
+// listenerPort returns the port of a host:port listener address, for logging.
+func listenerPort(addr string) string {
+	_, port, _ := net.SplitHostPort(addr)
+	return port
 }

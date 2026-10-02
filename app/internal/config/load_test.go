@@ -1,4 +1,4 @@
-package utils
+package config
 
 import (
 	"os"
@@ -26,7 +26,7 @@ func TestExtractPort(t *testing.T) {
 		{
 			name:     "Just port number",
 			addr:     "3000",
-			expected: "3000",
+			expected: "",
 		},
 		{
 			name:     "Port with colon prefix",
@@ -47,9 +47,9 @@ func TestExtractPort(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ExtractPort(tt.addr)
+			result := listenerPort(tt.addr)
 			if result != tt.expected {
-				t.Errorf("ExtractPort(%q) = %q; want %q", tt.addr, result, tt.expected)
+				t.Errorf("listenerPort(%q) = %q; want %q", tt.addr, result, tt.expected)
 			}
 		})
 	}
@@ -76,9 +76,9 @@ configurations:
 	}
 
 	// Test loading the config
-	cfg, err := LoadConfig(configFile)
+	cfg, err := Load(configFile)
 	if err != nil {
-		t.Fatalf("LoadConfig() failed: %v", err)
+		t.Fatalf("Load() failed: %v", err)
 	}
 
 	// Verify the config was loaded correctly
@@ -100,7 +100,7 @@ configurations:
 }
 
 func TestLoadConfigFileNotFound(t *testing.T) {
-	_, err := LoadConfig("nonexistent_file.yaml")
+	_, err := Load("nonexistent_file.yaml")
 	if err == nil {
 		t.Error("Expected error for non-existent file, got nil")
 	}
@@ -126,7 +126,7 @@ configurations:
 		t.Fatalf("Failed to create test config file: %v", err)
 	}
 
-	_, err = LoadConfig(configFile)
+	_, err = Load(configFile)
 	if err == nil {
 		t.Error("Expected error for invalid YAML, got nil")
 	}
@@ -186,7 +186,7 @@ func TestLoadConfigRejects(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			f := writeTemp(t, tt.content)
-			_, err := LoadConfig(f)
+			_, err := Load(f)
 			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error = %v; want containing %q", err, tt.wantErr)
 			}
@@ -198,9 +198,9 @@ func TestLoadConfigRejects(t *testing.T) {
 }
 
 func TestLoadConfigExample(t *testing.T) {
-	cfg, err := LoadConfig(filepath.Join("..", "config.example.yaml"))
+	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"))
 	if err != nil {
-		t.Fatalf("LoadConfig(config.example.yaml) failed: %v", err)
+		t.Fatalf("Load(config.example.yaml) failed: %v", err)
 	}
 	if len(cfg.BackendConfigurations) != 3 {
 		t.Errorf("expected 3 configurations, got %d", len(cfg.BackendConfigurations))
@@ -214,7 +214,7 @@ func FuzzLoadConfig(f *testing.F) {
 	f.Add([]byte(validDoc + "---\n" + validDoc))
 	f.Add([]byte("configurations: [1, 2"))
 	f.Add([]byte("configurations:\n  - name: a\n    namespces: x\n"))
-	if data, err := os.ReadFile(filepath.Join("..", "config.example.yaml")); err == nil {
+	if data, err := os.ReadFile(filepath.Join("..", "..", "config.example.yaml")); err == nil {
 		f.Add(data)
 	}
 

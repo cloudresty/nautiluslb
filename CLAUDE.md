@@ -8,14 +8,15 @@ Open-source Layer 4 (TCP) load balancer that runs outside or at the edge of a Ku
 
 ## Architecture
 
-Entry point: `app/main.go` (single binary, not cmd/*). Reads `config.yaml` from the CWD; exits 1 on invalid config or a listener that cannot bind.
+Entry point: `app/cmd/nautiluslb/main.go` (flags `--config` (default `config.yaml`, env `NLB_CONFIG`), `--version`); exits 1 on invalid config or a listener that cannot bind. Version/commit/date are injected by ldflags into `internal/version` (Makefile, Dockerfile build args).
 
-- **config**: config types, annotation constants, strict validation.
-- **utils**: `LoadConfig` (strict decode: `KnownFields`, single document), address helpers.
-- **kubernetes**: client init (in-cluster first, then `kubeconfigPath`, then `~/.kube/config`); discovery POLLS nodes + services every 30s (no watches/informers). Only `list nodes` and `list services` are called.
-- **loadbalancer**: listener, round-robin selection, health checks (TCP connect, fixed 10s), connection proxying. No connection pooling.
+Packages under `app/internal/`:
+
+- **config**: config types, annotation constants, strict validation, `config.Load` (strict decode: `KnownFields`, single document).
+- **discovery**: client init (in-cluster first, then `kubeconfigPath`, then `~/.kube/config`); discovery POLLS nodes + services every 30s (no watches/informers). Only `list nodes` and `list services` are called.
+- **tcpproxy**: listener, round-robin selection, health checks (TCP connect, fixed 10s), connection proxying. No connection pooling.
 - **backend**: backend server state (atomics).
-- `app/version/` is an empty directory, not a package.
+- **version**: build metadata, `version.String()`.
 
 ## Domain rules
 
