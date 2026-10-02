@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -27,10 +26,10 @@ var (
 	sharedK8sClient *kubernetes.Clientset
 )
 
-// LoadBalancerInterface defines the methods that DiscoverK8sServices needs from the LoadBalancer.
+// LoadBalancerInterface defines the methods discovery needs from a
+// LoadBalancer. Both must be safe for concurrent use: discovery runs in its
+// own goroutine while connections are being served.
 type LoadBalancerInterface interface {
-	StartHealthChecks()
-	GetMu() *sync.RWMutex
 	GetBackendServers() []*backend.BackendServer
 	SetBackendServers(servers []*backend.BackendServer)
 }
@@ -107,8 +106,12 @@ func GetK8sClient(kubeconfigPath string) (*kubernetes.Clientset, string, error) 
 
 }
 
-// defaultHealthCheckInterval is the interval in seconds between health checks.
-var defaultHealthCheckInterval int = 30
+// discoveryInterval is the interval between service discovery passes.
+const discoveryInterval = 30 * time.Second
+
+// apiTimeout bounds one Kubernetes API call. client-go applies no timeout of
+// its own, so a hung API server would otherwise stop discovery for good.
+const apiTimeout = 30 * time.Second
 
 // matchesLabelSelector checks if service labels match the given label selector
 func matchesLabelSelector(serviceLabels map[string]string, labelSelector string) bool {
@@ -133,233 +136,14 @@ func matchesLabelSelector(serviceLabels map[string]string, labelSelector string)
 	return true
 }
 
-// DiscoverK8sServices discovers services in Kubernetes and adds them as backends.
-func DiscoverK8sServices(lb LoadBalancerInterface, config config.Configuration) {
+func getNodeIPs(ctx context.Context, k8sClient kubernetes.Interface) ([]string, error) {
 
-	// Get the shared Kubernetes client, it should already be initialized
-	k8sClient, err := GetSharedClient()
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
 
+	nodes, err := k8sClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return
-	}
-
-	backendCache := make(map[string]backend.BackendServer)
-
-	watchServices := func() {
-
-		for {
-
-			sleepDuration := time.Duration(defaultHealthCheckInterval) * time.Second
-
-			// The sleep duration is now always the default interval
-			// since we removed config.HealthCheckInterval
-			// If you want to make this configurable in the future, you'll need to
-
-			// Use the namespace from config, default to all namespaces if empty
-			namespace := config.Namespace
-			if namespace == "" {
-				namespace = "" // All namespaces (empty string means all namespaces)
-			}
-
-			services, err := k8sClient.CoreV1().Services(namespace).List(context.TODO(), metav1.ListOptions{})
-
-			if err != nil {
-				emit.Error.StructuredFields("Failed to list services",
-					emit.ZString("namespace", namespace),
-					emit.ZString("error", err.Error()))
-				continue
-			}
-
-			lb.GetMu().Lock()
-
-			// Create a map to track the new backends
-			newBackends := make(map[string]*backend.BackendServer)
-			nextBackendID := 1
-
-			// Iterate over all services
-			for _, service := range services.Items { // Check for the custom annotation
-				if enabled, ok := service.Annotations["nautiluslb.cloudresty.io/enabled"]; ok && enabled == "true" {
-
-					// Skip label selector check - just use annotation + namespace + port name
-					// This allows services without specific labels to be discovered
-
-					switch service.Spec.Type {
-					case corev1.ServiceTypeNodePort, corev1.ServiceTypeLoadBalancer:
-
-						// For NodePort and LoadBalancer services, we can use the NodePort directly.
-						for _, port := range service.Spec.Ports {
-
-							nodeIPs := getNodeIPs()
-
-							for _, nodeIP := range nodeIPs {
-								backend := &backend.BackendServer{
-									ID:       nextBackendID,
-									IP:       nodeIP,
-									Port:     int(port.NodePort),
-									PortName: port.Name,
-									Weight:   1,
-									Healthy:  true,
-								}
-								newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
-								nextBackendID++
-
-								// Use the service name from the Kubernetes API object
-								serviceType := "NodePort" // or "LoadBalancer" depending on the actual type
-
-								// Check if the backend is already in the cache
-								if _, exists := backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)]; !exists {
-									backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = *backend
-								}
-
-								// Update the cache with the new backend information
-								existingBackend, ok := backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)]
-								if ok && (existingBackend.IP != backend.IP || existingBackend.Port != backend.Port) {
-									emit.Debug.StructuredFields("Updating backend",
-										emit.ZString("service_name", service.Name),
-										emit.ZString("service_type", serviceType),
-										emit.ZString("backend_ip", backend.IP),
-										emit.ZInt("backend_port", backend.Port))
-									backendCache[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = *backend
-								}
-
-							}
-
-							// Simplified: Use NodePort directly without pod discovery
-							// This works with annotation-only approach
-
-						}
-
-					case corev1.ServiceTypeClusterIP:
-
-						// For ClusterIP services, we use the ClusterIP and the target port.
-						if len(service.Spec.Ports) > 0 {
-
-							for _, port := range service.Spec.Ports {
-
-								emit.Debug.StructuredFields("Found ClusterIP port",
-									emit.ZString("port_name", port.Name),
-									emit.ZInt("target_port", int(port.TargetPort.IntVal)))
-
-								if port.TargetPort.IntVal > 0 {
-
-									// Create a backend for each port of the ClusterIP service
-									backend := &backend.BackendServer{
-										ID:       nextBackendID,
-										IP:       service.Spec.ClusterIP,
-										Port:     int(port.TargetPort.IntVal),
-										PortName: port.Name,
-										Weight:   1,
-										Healthy:  true,
-									}
-
-									newBackends[fmt.Sprintf("%s:%d", backend.IP, backend.Port)] = backend
-									nextBackendID++
-
-								} else {
-
-									emit.Warn.StructuredFields("Skipping port - TargetPort not defined",
-										emit.ZString("port_name", port.Name))
-
-								}
-
-							}
-
-						} else {
-
-							emit.Warn.StructuredFields("No ports found for ClusterIP service",
-								emit.ZString("service_name", service.Name))
-
-						}
-
-					default:
-						emit.Warn.StructuredFields("Service type not supported",
-							emit.ZString("service_type", string(service.Spec.Type)),
-							emit.ZString("service_name", service.Name))
-
-					}
-
-				}
-
-			}
-
-			// Compare new backends with existing backends
-			existingBackends := lb.GetBackendServers()
-			backendsChanged := false
-
-			if len(newBackends) != len(existingBackends) {
-
-				backendsChanged = true
-
-			} else {
-
-				for _, newBackend := range newBackends {
-
-					found := false
-
-					for _, existingBackend := range existingBackends {
-
-						if newBackend.IP == existingBackend.IP && newBackend.Port == existingBackend.Port {
-							found = true
-							break
-						}
-
-					}
-
-					if !found {
-						backendsChanged = true
-						break
-					}
-
-				}
-
-			}
-
-			if backendsChanged {
-
-				// Clear existing backends before adding new ones from K8s
-				lb.SetBackendServers([]*backend.BackendServer{})
-
-				// Accumulate the new backends in a temporary list
-				var backendList []*backend.BackendServer
-
-				// Add the new backends to the list
-				for _, backend := range newBackends {
-					backendList = append(backendList, backend)
-				}
-
-				lb.SetBackendServers(backendList)
-
-			}
-
-			lb.GetMu().Unlock()
-
-			time.Sleep(sleepDuration) // Sleep before re-listing
-
-			if backendsChanged {
-
-				emit.Info.Msg("Backend servers changed, updating background health checks")
-				lb.StartHealthChecks()
-				emit.Info.Msg("Background health checks configuration updated")
-
-			} else {
-				// Backend servers unchanged, skipping background health checks configuration update
-				emit.Debug.Msg("Backend servers unchanged")
-			}
-		}
-
-	}
-
-	go watchServices()
-
-}
-
-func getNodeIPs() []string {
-
-	nodes, err := sharedK8sClient.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{})
-	if err != nil {
-		emit.Error.StructuredFields("Failed to list nodes",
-			emit.ZString("error", err.Error()))
-		return []string{}
+		return nil, fmt.Errorf("listing nodes: %w", err)
 	}
 
 	var ips []string
@@ -373,7 +157,7 @@ func getNodeIPs() []string {
 		}
 	}
 
-	return ips
+	return ips, nil
 
 }
 
@@ -398,40 +182,58 @@ func DiscoverK8sServicesForAll(loadBalancers []LoadBalancerInterface, configs []
 		}
 	}
 
+	// Group configs by namespace for efficient API calls
+	namespaceConfigs := make(map[string][]config.Configuration)
+	for _, cfg := range configs {
+		namespace := cfg.Namespace
+		if namespace == "" {
+			namespace = "all" // Special key for all namespaces
+		}
+		namespaceConfigs[namespace] = append(namespaceConfigs[namespace], cfg)
+	}
+
 	// Main discovery loop
 	for {
-		sleepDuration := time.Duration(defaultHealthCheckInterval) * time.Second
 
-		// Group configs by namespace for efficient API calls
-		namespaceConfigs := make(map[string][]config.Configuration)
-		for _, cfg := range configs {
-			namespace := cfg.Namespace
-			if namespace == "" {
-				namespace = "all" // Special key for all namespaces
-			}
-			namespaceConfigs[namespace] = append(namespaceConfigs[namespace], cfg)
-		}
+		discoverOnce(context.Background(), k8sClient, namespaceConfigs, configToLB)
 
-		// Discover services per namespace
-		for namespace, nsConfigs := range namespaceConfigs {
-			discoverServicesForNamespace(k8sClient, namespace, nsConfigs, configToLB)
-		}
-
-		time.Sleep(sleepDuration)
+		time.Sleep(discoveryInterval)
 	}
 }
 
+// discoverOnce runs one discovery pass. Node IPs are listed once per pass.
+// If that fails the pass is skipped: an empty node list would otherwise
+// replace every NodePort backend with nothing, turning an API blip (or an
+// expired credential) into an outage.
+func discoverOnce(ctx context.Context, k8sClient kubernetes.Interface, namespaceConfigs map[string][]config.Configuration, configToLB map[string]LoadBalancerInterface) {
+
+	nodeIPs, err := getNodeIPs(ctx, k8sClient)
+	if err != nil {
+		emit.Error.StructuredFields("Failed to list nodes, keeping current backends",
+			emit.ZString("error", err.Error()))
+		return
+	}
+
+	for namespace, nsConfigs := range namespaceConfigs {
+		discoverServicesForNamespace(ctx, k8sClient, namespace, nsConfigs, configToLB, nodeIPs)
+	}
+
+}
+
 // discoverServicesForNamespace discovers services in a specific namespace for centralized discovery
-func discoverServicesForNamespace(k8sClient *Clientset, namespace string, configs []config.Configuration, configToLB map[string]LoadBalancerInterface) {
+func discoverServicesForNamespace(ctx context.Context, k8sClient kubernetes.Interface, namespace string, configs []config.Configuration, configToLB map[string]LoadBalancerInterface, nodeIPs []string) {
 	// Use empty string for all namespaces
 	searchNamespace := namespace
 	if namespace == "all" {
 		searchNamespace = ""
 	}
 
-	services, err := k8sClient.CoreV1().Services(searchNamespace).List(context.TODO(), metav1.ListOptions{})
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
+
+	services, err := k8sClient.CoreV1().Services(searchNamespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		emit.Error.StructuredFields("Failed to list services in centralized discovery",
+		emit.Error.StructuredFields("Failed to list services in centralized discovery, keeping current backends",
 			emit.ZString("namespace", namespace),
 			emit.ZString("error", err.Error()))
 		return
@@ -439,28 +241,26 @@ func discoverServicesForNamespace(k8sClient *Clientset, namespace string, config
 
 	// Process each configuration
 	for _, cfg := range configs {
-		backends := processServicesForConfig(services.Items, cfg)
+		backends := processServicesForConfig(services.Items, cfg, nodeIPs)
 
 		// Update the corresponding LoadBalancer
 		if lb, exists := configToLB[cfg.Name]; exists {
 			currentBackends := lb.GetBackendServers()
 
-			// Only update if backends changed
+			// Only update if backends changed. SetBackendServers also
+			// starts and stops the matching health checks.
 			if !backendsEqual(currentBackends, backends) {
 				lb.SetBackendServers(backends)
 				emit.Info.StructuredFields("Updated backends for config",
 					emit.ZInt("backend_count", len(backends)),
 					emit.ZString("config_name", cfg.Name))
-
-				// Start health checks
-				go lb.StartHealthChecks()
 			}
 		}
 	}
 }
 
 // processServicesForConfig processes services for a specific configuration in centralized discovery
-func processServicesForConfig(services []corev1.Service, cfg config.Configuration) []*backend.BackendServer {
+func processServicesForConfig(services []corev1.Service, cfg config.Configuration, nodeIPs []string) []*backend.BackendServer {
 	var backends []*backend.BackendServer
 	backendID := 1
 
@@ -470,11 +270,8 @@ func processServicesForConfig(services []corev1.Service, cfg config.Configuratio
 			continue
 		}
 
-		// Skip label selector check - just use annotation + namespace + port name
-		// This allows services without specific labels to be discovered
-
 		// Process the service based on type
-		serviceBackends := processServiceForConfig(service, cfg, &backendID)
+		serviceBackends := processServiceForConfig(service, cfg, nodeIPs, &backendID)
 		backends = append(backends, serviceBackends...)
 	}
 
@@ -482,7 +279,7 @@ func processServicesForConfig(services []corev1.Service, cfg config.Configuratio
 }
 
 // processServiceForConfig processes a single service for centralized discovery
-func processServiceForConfig(service corev1.Service, cfg config.Configuration, backendID *int) []*backend.BackendServer {
+func processServiceForConfig(service corev1.Service, cfg config.Configuration, nodeIPs []string, backendID *int) []*backend.BackendServer {
 	var backends []*backend.BackendServer
 
 	switch service.Spec.Type {
@@ -492,17 +289,8 @@ func processServiceForConfig(service corev1.Service, cfg config.Configuration, b
 				continue
 			}
 
-			nodeIPs := getNodeIPs()
 			for _, nodeIP := range nodeIPs {
-				backend := &backend.BackendServer{
-					ID:       *backendID,
-					IP:       nodeIP,
-					Port:     int(port.NodePort),
-					PortName: port.Name,
-					Weight:   1,
-					Healthy:  true,
-				}
-				backends = append(backends, backend)
+				backends = append(backends, backend.New(*backendID, nodeIP, int(port.NodePort), port.Name))
 				*backendID++
 			}
 		}
@@ -514,15 +302,7 @@ func processServiceForConfig(service corev1.Service, cfg config.Configuration, b
 			}
 
 			if port.TargetPort.IntVal > 0 {
-				backend := &backend.BackendServer{
-					ID:       *backendID,
-					IP:       service.Spec.ClusterIP,
-					Port:     int(port.TargetPort.IntVal),
-					PortName: port.Name,
-					Weight:   1,
-					Healthy:  true,
-				}
-				backends = append(backends, backend)
+				backends = append(backends, backend.New(*backendID, service.Spec.ClusterIP, int(port.TargetPort.IntVal), port.Name))
 				*backendID++
 			}
 		}
@@ -545,12 +325,11 @@ func backendsEqual(old, new []*backend.BackendServer) bool {
 	// Create maps for comparison
 	oldMap := make(map[string]*backend.BackendServer)
 	for _, b := range old {
-		oldMap[fmt.Sprintf("%s:%d", b.IP, b.Port)] = b
+		oldMap[b.Address()+"/"+b.PortName] = b
 	}
 
 	for _, b := range new {
-		key := fmt.Sprintf("%s:%d", b.IP, b.Port)
-		if _, exists := oldMap[key]; !exists {
+		if _, exists := oldMap[b.Address()+"/"+b.PortName]; !exists {
 			return false
 		}
 	}

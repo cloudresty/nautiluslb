@@ -1,187 +1,186 @@
 package backend
 
 import (
-	"fmt"
+	"context"
 	"net"
-	"strings"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
-
-	"github.com/cloudresty/emit"
 )
 
-func TestBackendServerCreation(t *testing.T) {
-	server := &BackendServer{
-		ID:       1,
-		IP:       "192.168.1.1",
-		Port:     8080,
-		PortName: "http",
-		Weight:   100,
-		Healthy:  true,
-	}
+func TestNew(t *testing.T) {
+	server := New(1, "192.168.1.1", 8080, "http")
 
-	if server.ID != 1 {
-		t.Errorf("Expected ID 1, got %d", server.ID)
+	if server.ID != 1 || server.IP != "192.168.1.1" || server.Port != 8080 || server.PortName != "http" {
+		t.Errorf("unexpected fields: %+v", server)
 	}
-
-	if server.IP != "192.168.1.1" {
-		t.Errorf("Expected IP '192.168.1.1', got '%s'", server.IP)
+	if server.Weight != 1 {
+		t.Errorf("Weight = %d, want 1", server.Weight)
 	}
-
-	if server.Port != 8080 {
-		t.Errorf("Expected Port 8080, got %d", server.Port)
+	if !server.IsHealthy() {
+		t.Error("a new backend should start healthy")
 	}
-
-	if server.PortName != "http" {
-		t.Errorf("Expected PortName 'http', got '%s'", server.PortName)
+	if server.ActiveConnections() != 0 {
+		t.Errorf("ActiveConnections = %d, want 0", server.ActiveConnections())
 	}
-
-	if server.Weight != 100 {
-		t.Errorf("Expected Weight 100, got %d", server.Weight)
-	}
-
-	if server.ActiveConnections != 0 {
-		t.Errorf("Expected ActiveConnections 0, got %d", server.ActiveConnections)
-	}
-
-	if server.Healthy != true {
-		t.Errorf("Expected Healthy true, got %v", server.Healthy)
+	if got := server.Address(); got != "192.168.1.1:8080" {
+		t.Errorf("Address = %q", got)
 	}
 }
 
-func TestBackendServerFields(t *testing.T) {
-	server := &BackendServer{
-		ID:                1,
-		IP:                "10.0.0.1",
-		Port:              9090,
-		PortName:          "api",
-		Weight:            50,
-		ActiveConnections: 5,
-		Healthy:           false,
-		PreviousHealthy:   true,
-	}
-
-	if server.ActiveConnections != 5 {
-		t.Errorf("Expected ActiveConnections 5, got %d", server.ActiveConnections)
-	}
-
-	if server.Healthy != false {
-		t.Errorf("Expected Healthy false, got %v", server.Healthy)
-	}
-
-	if server.PreviousHealthy != true {
-		t.Errorf("Expected PreviousHealthy true, got %v", server.PreviousHealthy)
+func TestAddressIPv6(t *testing.T) {
+	if got := New(1, "fd00::1", 443, "https").Address(); got != "[fd00::1]:443" {
+		t.Errorf("Address = %q", got)
 	}
 }
 
-func TestBackendServerHealthStatus(t *testing.T) {
-	server := &BackendServer{
-		IP:      "192.168.1.1",
-		Port:    8080,
-		Healthy: true,
-	}
+func TestSetHealthyReportsChange(t *testing.T) {
+	server := New(1, "10.0.0.1", 80, "http")
 
-	status := server.healthStatus()
-	if status != "healthy" {
-		t.Errorf("Expected 'healthy', got '%s'", status)
+	if server.SetHealthy(true) {
+		t.Error("healthy -> healthy is not a change")
 	}
-
-	server.Healthy = false
-	status = server.healthStatus()
-	if status != "unhealthy" {
-		t.Errorf("Expected 'unhealthy', got '%s'", status)
+	if !server.SetHealthy(false) {
+		t.Error("healthy -> unhealthy is a change")
+	}
+	if server.healthStatus() != "unhealthy" {
+		t.Errorf("status = %q", server.healthStatus())
+	}
+	if !server.SetHealthy(true) {
+		t.Error("unhealthy -> healthy is a change")
+	}
+	if server.healthStatus() != "healthy" {
+		t.Errorf("status = %q", server.healthStatus())
 	}
 }
 
-func TestBackendServerHealthCheckWithMockServer(t *testing.T) {
-	// Create a test server that responds to connections
+func TestConnectionCounting(t *testing.T) {
+	server := New(1, "10.0.0.1", 80, "http")
+
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			server.Acquire()
+			server.Release()
+		}()
+	}
+	wg.Wait()
+
+	if got := server.ActiveConnections(); got != 0 {
+		t.Errorf("ActiveConnections = %d, want 0", got)
+	}
+}
+
+func listen(t *testing.T) (net.Listener, int) {
+	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("Failed to create test listener: %v", err)
+		t.Fatalf("listen: %v", err)
 	}
-	defer func() {
-		if err := listener.Close(); err != nil {
-			t.Logf("Warning: Failed to close test listener: %v", err)
-		}
-	}()
-
-	// Accept connections in a goroutine
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			if err := conn.Close(); err != nil {
-				emit.Warn.StructuredFields("Failed to close test connection",
-					emit.ZString("error", err.Error()))
-			}
+			_ = conn.Close()
 		}
 	}()
+	return listener, listener.Addr().(*net.TCPAddr).Port
+}
 
-	// Get the actual port that was assigned
-	addr := listener.Addr().(*net.TCPAddr)
-	port := addr.Port
+func TestCheckOnceMarksUnhealthyAfterThreshold(t *testing.T) {
+	listener, port := listen(t)
+	_ = listener.Close() // nothing listens: every probe is refused
 
-	server := &BackendServer{
-		IP:      "127.0.0.1",
-		Port:    port,
-		Healthy: true,
-	}
+	server := New(1, "127.0.0.1", port, "http")
+	ctx := context.Background()
 
-	// Test health check by manually trying connection (since HealthCheck runs in loop)
-	connectionTimeout := 2 * time.Second
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(server.IP, fmt.Sprintf("%d", server.Port)), connectionTimeout)
-
-	if err != nil {
-		t.Errorf("Should be able to connect to test server: %v", err)
-	} else {
-		if err := conn.Close(); err != nil {
-			// Only log if it's not an expected "already closed" error
-			if !strings.Contains(err.Error(), "use of closed network connection") {
-				t.Logf("Warning: Failed to close test connection: %v", err)
-			}
+	failures := 0
+	for i := 1; i < unhealthyThreshold; i++ {
+		failures = server.checkOnce(ctx, time.Second, failures)
+		if !server.IsHealthy() {
+			t.Fatalf("marked unhealthy after %d failures, threshold is %d", i, unhealthyThreshold)
 		}
 	}
-}
 
-func TestBackendServerDefaultValues(t *testing.T) {
-	server := &BackendServer{}
-
-	if server.ID != 0 {
-		t.Errorf("Expected default ID 0, got %d", server.ID)
-	}
-
-	if server.IP != "" {
-		t.Errorf("Expected default IP empty string, got '%s'", server.IP)
-	}
-
-	if server.ActiveConnections != 0 {
-		t.Errorf("Expected default ActiveConnections 0, got %d", server.ActiveConnections)
-	}
-
-	if server.Healthy != false {
-		t.Errorf("Expected default Healthy false, got %v", server.Healthy)
+	failures = server.checkOnce(ctx, time.Second, failures)
+	if server.IsHealthy() {
+		t.Fatalf("still healthy after %d failures", failures)
 	}
 }
 
-func TestBackendServerConnectionManagement(t *testing.T) {
-	server := &BackendServer{
-		ActiveConnections: 0,
+func TestCheckOnceRecovers(t *testing.T) {
+	listener, port := listen(t)
+	defer func() { _ = listener.Close() }()
+
+	server := New(1, "127.0.0.1", port, "http")
+	server.SetHealthy(false)
+
+	if failures := server.checkOnce(context.Background(), time.Second, 5); failures != 0 {
+		t.Errorf("failures after success = %d, want 0", failures)
 	}
-
-	// Test incrementing connections
-	originalCount := server.ActiveConnections
-	server.ActiveConnections++
-
-	if server.ActiveConnections != originalCount+1 {
-		t.Errorf("Expected ActiveConnections %d, got %d", originalCount+1, server.ActiveConnections)
+	if !server.IsHealthy() {
+		t.Error("a successful probe should restore health")
 	}
+}
 
-	// Test decrementing connections
-	server.ActiveConnections--
+func TestCheckOnceIgnoresShutdown(t *testing.T) {
+	server := New(1, "192.0.2.1", 80, "http")
 
-	if server.ActiveConnections != originalCount {
-		t.Errorf("Expected ActiveConnections %d, got %d", originalCount, server.ActiveConnections)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	for range unhealthyThreshold + 1 {
+		if failures := server.checkOnce(ctx, time.Second, 0); failures != 0 {
+			t.Fatalf("a probe cancelled by shutdown counted as a failure")
+		}
+	}
+	if !server.IsHealthy() {
+		t.Error("shutdown must not mark a backend unhealthy")
+	}
+}
+
+func TestHealthCheckStopsOnCancel(t *testing.T) {
+	listener, port := listen(t)
+	defer func() { _ = listener.Close() }()
+
+	server := New(1, "127.0.0.1", port, "http")
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.HealthCheck(ctx, 10*time.Millisecond, time.Second)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HealthCheck did not return after cancel")
+	}
+}
+
+func TestHealthCheckProbeIsBounded(t *testing.T) {
+	// A probe to a blackholed address must give up after the timeout.
+	server := New(1, "192.0.2.1", 9, "http")
+
+	start := time.Now()
+	server.checkOnce(context.Background(), 100*time.Millisecond, 0)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("probe took %v with a 100ms timeout", elapsed)
+	}
+}
+
+func TestPortFormatting(t *testing.T) {
+	server := New(1, "10.0.0.1", 30554, "https")
+	if server.Address() != "10.0.0.1:"+strconv.Itoa(30554) {
+		t.Errorf("Address = %q", server.Address())
 	}
 }
