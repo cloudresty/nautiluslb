@@ -136,7 +136,7 @@ settings:
 configurations:
   - name: http_traffic_configuration
     listenerAddress: ":80"  # Listen on port 80 for HTTP traffic
-    requestTimeout: 5  # Timeout for backend requests (in seconds)
+    requestTimeout: 5  # Timeout for connecting to a backend (in seconds, capped at 10)
     backendPortName: "http"  # Name of the port in the backend service
 
   - name: https_traffic_configuration
@@ -167,7 +167,13 @@ configurations:
 - **`configurations`:** A list of backend configurations, each defining how to handle traffic for a specific service.
   - **`name`:** A unique name for the backend configuration.
   - **`listenerAddress`:** The address on which NautilusLB will listen for incoming connections for this backend (e.g., `:80`, `:443`, `:27017`).
-  - **`requestTimeout`:** (Optional) The timeout (in seconds) for requests forwarded to the backend servers.
+  - **`requestTimeout`:** (Optional) How long, in seconds, to wait when connecting to one backend before trying the next. Defaults to 5 and is capped at 10. It never limits how long an established connection stays open: listeners commonly carry websockets, SSE, database and cache sessions that stay open for hours.
+
+#### Connection handling
+
+- A connection that cannot reach a backend is retried on up to three distinct backends, then closed cleanly. A backend that refuses or times out is taken out of rotation at once and restored by its next successful health check (every 10 seconds). If every backend is marked unhealthy, all of them are tried rather than none.
+- Established connections have no idle timeout. Dead peers are detected by TCP keepalive (about 60 seconds). Once one side half-closes, the other direction must make progress at least every 2 minutes, and any single write may stall for at most 2 minutes.
+- A failure in one connection, including a panic, closes that connection only.
   - **`namespace`:** (Optional) The Kubernetes namespace to discover services in. If omitted, services will be discovered across all namespaces.
   - **`backendPortName`:** The name of the port in the backend service that corresponds to the listener address. This is used to determine which port to forward traffic to on the selected backend pods.
 

@@ -73,11 +73,16 @@ func main() {
 	}
 	emit.Info.StructuredFields("Initialized Kubernetes client",
 		emit.ZString("context", currentContext))
+	// Install the signal handler before anything starts, so SIGTERM (docker
+	// stop) always reaches the shutdown path below.
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
 	var wg sync.WaitGroup
 	var loadBalancers []*loadbalancer.LoadBalancer
 
 	//
-	// Create a new load balancer for each backend configuration (without individual discovery)
+	// Create a new load balancer for each backend configuration
 	//
 
 	for _, backendConfig := range configData.BackendConfigurations {
@@ -103,29 +108,25 @@ func main() {
 	}
 
 	// Start centralized service discovery for all load balancers
-	// Convert to interface slice
 	var lbInterfaces []kubernetes.LoadBalancerInterface
 	for _, lb := range loadBalancers {
 		lbInterfaces = append(lbInterfaces, lb)
 	}
 	go kubernetes.DiscoverK8sServicesForAll(lbInterfaces, configData.BackendConfigurations)
 
-	wg.Wait()
-	emit.Info.Msg("All load balancers stopped, exiting")
+	sig := <-sigChan
+	emit.Info.StructuredFields("Shutting down gracefully...",
+		emit.ZString("signal", sig.String()))
 
-	// Graceful shutdown on signals
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	<-sigChan
-
-	emit.Info.Msg("Shutting down gracefully...")
-
-	for _, backendConfig := range configData.BackendConfigurations {
+	// Stop the load balancers that are actually running. Connections being
+	// proxied end when the process exits.
+	for _, lb := range loadBalancers {
 		emit.Info.StructuredFields("Stopping load balancer",
-			emit.ZString("config_name", backendConfig.Name))
-		lb := loadbalancer.NewLoadBalancer(backendConfig, time.Duration(backendConfig.RequestTimeout)*time.Second)
+			emit.ZString("listener_addr", lb.ListenerAddress))
 		lb.Stop()
 	}
+
+	wg.Wait()
 
 	emit.Info.Msg("Shutdown complete.")
 	os.Exit(0)

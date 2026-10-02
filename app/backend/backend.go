@@ -1,112 +1,161 @@
 package backend
 
 import (
+	"context"
 	"fmt"
 	"net"
-	"strings"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/cloudresty/emit"
 )
 
+// unhealthyThreshold is how many consecutive failed health checks mark a
+// backend unhealthy. A single success marks it healthy again.
+const unhealthyThreshold = 3
+
 // BackendServer represents a backend server.
+//
+// Health and the active connection count are read by every connection
+// handler and written by the health checker concurrently, so they are atomics
+// behind methods rather than plain fields. A BackendServer must therefore not
+// be copied after first use.
 type BackendServer struct {
-	ID                int    `json:"id"`
-	IP                string `json:"ip"`
-	Port              int    `json:"port"`
-	PortName          string `json:"port_name"`
-	Weight            int
-	ActiveConnections int
-	Healthy           bool
-	PreviousHealthy   bool // Track previous health status
+	ID       int    `json:"id"`
+	IP       string `json:"ip"`
+	Port     int    `json:"port"`
+	PortName string `json:"port_name"`
+	Weight   int
+
+	healthy           atomic.Bool
+	activeConnections atomic.Int64
 }
 
-// HealthCheck checks the health of a backend server.
-func (server *BackendServer) HealthCheck(interval time.Duration) {
+// New returns a backend that starts out healthy, so traffic flows before the
+// first health check has completed.
+func New(id int, ip string, port int, portName string) *BackendServer {
+	server := &BackendServer{
+		ID:       id,
+		IP:       ip,
+		Port:     port,
+		PortName: portName,
+		Weight:   1,
+	}
+	server.healthy.Store(true)
+	return server
+}
 
-	var lastCheck time.Time
+// Address returns the backend's dialable host:port.
+func (server *BackendServer) Address() string {
+	return net.JoinHostPort(server.IP, strconv.Itoa(server.Port))
+}
 
-	failureCounter := 0
-	retryLimit := 3
-	connectionTimeout := 2 * time.Second
+// IsHealthy reports the backend's current health.
+func (server *BackendServer) IsHealthy() bool {
+	return server.healthy.Load()
+}
+
+// SetHealthy sets the backend's health and reports whether it changed.
+func (server *BackendServer) SetHealthy(healthy bool) bool {
+	return server.healthy.Swap(healthy) != healthy
+}
+
+// ActiveConnections returns the number of connections currently proxied to
+// this backend.
+func (server *BackendServer) ActiveConnections() int64 {
+	return server.activeConnections.Load()
+}
+
+// Acquire records a connection proxied to this backend.
+func (server *BackendServer) Acquire() {
+	server.activeConnections.Add(1)
+}
+
+// Release records the end of a connection proxied to this backend.
+func (server *BackendServer) Release() {
+	server.activeConnections.Add(-1)
+}
+
+// HealthCheck probes the backend with a TCP connect every interval until ctx
+// is cancelled. Each probe is bounded by timeout and by ctx.
+func (server *BackendServer) HealthCheck(ctx context.Context, interval, timeout time.Duration) {
+
+	failures := 0
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 
 	for {
 
-		// Calculate elapsed time since last check
-		elapsed := time.Since(lastCheck)
-		sleepDuration := interval - elapsed
-		time.Sleep(sleepDuration)
-		conn, err := net.DialTimeout("tcp", net.JoinHostPort(server.IP, fmt.Sprintf("%d", server.Port)), connectionTimeout)
+		failures = server.checkOnce(ctx, timeout, failures)
 
-		healthChanged := false
-		if err != nil {
-
-			failureCounter++
-
-			emit.Warn.StructuredFields("Backend health check failed",
-				emit.ZString("backend_ip", server.IP),
-				emit.ZInt("backend_port", server.Port),
-				emit.ZInt("attempt", failureCounter),
-				emit.ZString("error", err.Error()))
-
-			if failureCounter >= retryLimit && server.Healthy { // Require 3 consecutive failures
-				server.Healthy = false
-				healthChanged = true
-				emit.Error.StructuredFields("Backend marked as unhealthy",
-					emit.ZString("backend_ip", server.IP),
-					emit.ZInt("backend_port", server.Port),
-					emit.ZString("reason", "3 consecutive failures"))
-			}
-
-		} else {
-
-			failureCounter = 0 // Reset failure count on success
-
-			if !server.Healthy {
-				server.Healthy = true
-				healthChanged = true
-				emit.Info.StructuredFields("Backend recovered to healthy",
-					emit.ZString("backend_ip", server.IP),
-					emit.ZInt("backend_port", server.Port))
-			}
-
-			// Close the connection only if it was successfully created
-			if err := conn.Close(); err != nil {
-				// Only log if it's not an expected "already closed" error
-				if !isConnectionClosedError(err) {
-					emit.Warn.StructuredFields("Failed to close health check connection",
-						emit.ZString("backend_ip", server.IP),
-						emit.ZInt("backend_port", server.Port),
-						emit.ZString("error", err.Error()))
-				}
-			}
-
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
-
-		if healthChanged {
-			emit.Debug.StructuredFields("Backend health status",
-				emit.ZString("backend_ip", server.IP),
-				emit.ZInt("backend_port", server.Port),
-				emit.ZString("status", server.healthStatus()))
-		}
-
-		lastCheck = time.Now()
 
 	}
+
+}
+
+// checkOnce runs one probe and returns the updated consecutive-failure count.
+func (server *BackendServer) checkOnce(ctx context.Context, timeout time.Duration, failures int) int {
+
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(probeCtx, "tcp", server.Address())
+
+	if err != nil {
+
+		// A probe cut short by shutdown says nothing about the backend.
+		if ctx.Err() != nil {
+			return failures
+		}
+
+		failures++
+		emit.Warn.StructuredFields("Backend health check failed",
+			emit.ZString("backend_ip", server.IP),
+			emit.ZInt("backend_port", server.Port),
+			emit.ZInt("attempt", failures),
+			emit.ZString("error", err.Error()))
+
+		if failures >= unhealthyThreshold && server.SetHealthy(false) {
+			emit.Error.StructuredFields("Backend marked as unhealthy",
+				emit.ZString("backend_ip", server.IP),
+				emit.ZInt("backend_port", server.Port),
+				emit.ZString("reason", fmt.Sprintf("%d consecutive failures", failures)))
+		}
+
+		return failures
+
+	}
+
+	if err := conn.Close(); err != nil {
+		emit.Debug.StructuredFields("Failed to close health check connection",
+			emit.ZString("backend_ip", server.IP),
+			emit.ZInt("backend_port", server.Port),
+			emit.ZString("error", err.Error()))
+	}
+
+	if server.SetHealthy(true) {
+		emit.Info.StructuredFields("Backend recovered to healthy",
+			emit.ZString("backend_ip", server.IP),
+			emit.ZInt("backend_port", server.Port))
+	}
+
+	return 0
 
 }
 
 func (server *BackendServer) healthStatus() string {
 
-	if server.Healthy {
+	if server.IsHealthy() {
 		return "healthy"
 	}
 
 	return "unhealthy"
 
-}
-
-// isConnectionClosedError checks if the error is due to connection already being closed
-func isConnectionClosedError(err error) bool {
-	return strings.Contains(err.Error(), "use of closed network connection")
 }

@@ -1,10 +1,16 @@
 package kubernetes
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/cloudresty/nautiluslb/backend"
 	"github.com/cloudresty/nautiluslb/config"
@@ -173,7 +179,7 @@ func TestBackendsEqual(t *testing.T) {
 			new: []*backend.BackendServer{
 				{ID: 1, IP: "192.168.1.1", Port: 8080, PortName: "https"},
 			},
-			expected: true, // The current implementation only checks IP:Port, not PortName
+			expected: false, // A renamed port must update: selection filters on PortName
 		},
 		{
 			name: "Different order same content",
@@ -210,72 +216,137 @@ func TestProcessServicesForConfig(t *testing.T) {
 	}
 
 	// Test with empty services
-	backends := processServicesForConfig(nil, cfg)
+	backends := processServicesForConfig(nil, cfg, nil)
 	if len(backends) != 0 {
 		t.Errorf("Expected 0 backends for nil services, got %d", len(backends))
 	}
 
 	// Test with empty slice
-	backends = processServicesForConfig([]corev1.Service{}, cfg)
+	backends = processServicesForConfig([]corev1.Service{}, cfg, nil)
 	if len(backends) != 0 {
 		t.Errorf("Expected 0 backends for empty services, got %d", len(backends))
 	}
 }
 
-// Mock LoadBalancer interface for testing
-type MockLoadBalancer struct {
-	mu             *sync.RWMutex
-	backendServers []*backend.BackendServer
+func TestProcessServicesForConfigNodePort(t *testing.T) {
+	cfg := config.Configuration{Name: "https", BackendPortName: "https", ListenerAddress: ":443"}
+
+	services := []corev1.Service{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "ingress",
+				Annotations: map[string]string{"nautiluslb.cloudresty.io/enabled": "true"},
+			},
+			Spec: corev1.ServiceSpec{
+				Type: corev1.ServiceTypeNodePort,
+				Ports: []corev1.ServicePort{
+					{Name: "http", NodePort: 30554},
+					{Name: "https", NodePort: 30742},
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{Name: "not-annotated"},
+			Spec: corev1.ServiceSpec{
+				Type:  corev1.ServiceTypeNodePort,
+				Ports: []corev1.ServicePort{{Name: "https", NodePort: 31000}},
+			},
+		},
+	}
+
+	backends := processServicesForConfig(services, cfg, []string{"10.0.0.1", "10.0.0.2"})
+	if len(backends) != 2 {
+		t.Fatalf("got %d backends, want 2", len(backends))
+	}
+	for _, b := range backends {
+		if b.Port != 30742 || b.PortName != "https" || !b.IsHealthy() {
+			t.Errorf("unexpected backend %s %s healthy=%v", b.Address(), b.PortName, b.IsHealthy())
+		}
+	}
 }
 
-func (m *MockLoadBalancer) GetMu() *sync.RWMutex {
-	if m.mu == nil {
-		m.mu = &sync.RWMutex{}
-	}
-	return m.mu
+// fakeLB records SetBackendServers calls.
+type fakeLB struct {
+	mu      sync.Mutex
+	servers []*backend.BackendServer
+	sets    int
 }
 
-func (m *MockLoadBalancer) GetBackendServers() []*backend.BackendServer {
-	if m.backendServers == nil {
-		m.backendServers = []*backend.BackendServer{}
-	}
-	return m.backendServers
+func (f *fakeLB) GetBackendServers() []*backend.BackendServer {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]*backend.BackendServer{}, f.servers...)
 }
 
-func (m *MockLoadBalancer) SetBackendServers(servers []*backend.BackendServer) {
-	m.backendServers = servers
+func (f *fakeLB) SetBackendServers(servers []*backend.BackendServer) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.servers = servers
+	f.sets++
 }
 
-func TestMockLoadBalancer(t *testing.T) {
-	// Test our mock implementation
-	mock := &MockLoadBalancer{}
-
-	if mock.GetMu() == nil {
-		t.Error("GetMu should not return nil")
+func ingressFixtures() []runtime.Object {
+	return []runtime.Object{
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "n1"},
+			Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+				{Type: corev1.NodeInternalIP, Address: "10.0.0.1"},
+			}},
+		},
+		&corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "ingress",
+				Namespace:   "ingress",
+				Annotations: map[string]string{"nautiluslb.cloudresty.io/enabled": "true"},
+			},
+			Spec: corev1.ServiceSpec{
+				Type:  corev1.ServiceTypeNodePort,
+				Ports: []corev1.ServicePort{{Name: "https", NodePort: 30742}},
+			},
+		},
 	}
+}
 
-	servers := mock.GetBackendServers()
-	if servers == nil {
-		t.Error("GetBackendServers should not return nil")
+func TestDiscoverOnceUpdatesBackends(t *testing.T) {
+	client := fake.NewClientset(ingressFixtures()...)
+	lb := &fakeLB{}
+	cfg := config.Configuration{Name: "https", BackendPortName: "https", Namespace: "ingress"}
+
+	discoverOnce(context.Background(), client,
+		map[string][]config.Configuration{"ingress": {cfg}},
+		map[string]LoadBalancerInterface{"https": lb})
+
+	servers := lb.GetBackendServers()
+	if len(servers) != 1 || servers[0].Address() != "10.0.0.1:30742" {
+		t.Fatalf("unexpected backends: %d", len(servers))
 	}
+}
 
-	if len(servers) != 0 {
-		t.Errorf("Expected 0 backend servers initially, got %d", len(servers))
-	}
+// An API failure (the production case was an expired client certificate,
+// "Unauthorized") must keep the backends already known, never wipe them.
+func TestDiscoverOnceKeepsBackendsWhenTheAPIFails(t *testing.T) {
+	for _, resource := range []string{"nodes", "services"} {
+		t.Run(resource, func(t *testing.T) {
+			client := fake.NewClientset(ingressFixtures()...)
+			client.PrependReactor("list", resource, func(k8stesting.Action) (bool, runtime.Object, error) {
+				return true, nil, errors.New("Unauthorized")
+			})
 
-	testServers := []*backend.BackendServer{
-		{ID: 1, IP: "192.168.1.1", Port: 8080},
-	}
+			known := backend.New(1, "10.0.0.9", 30742, "https")
+			lb := &fakeLB{servers: []*backend.BackendServer{known}}
+			cfg := config.Configuration{Name: "https", BackendPortName: "https", Namespace: "ingress"}
 
-	mock.SetBackendServers(testServers)
+			discoverOnce(context.Background(), client,
+				map[string][]config.Configuration{"ingress": {cfg}},
+				map[string]LoadBalancerInterface{"https": lb})
 
-	retrievedServers := mock.GetBackendServers()
-	if len(retrievedServers) != 1 {
-		t.Errorf("Expected 1 backend server, got %d", len(retrievedServers))
-	}
-
-	if retrievedServers[0].IP != "192.168.1.1" {
-		t.Errorf("Expected IP '192.168.1.1', got '%s'", retrievedServers[0].IP)
+			if lb.sets != 0 {
+				t.Fatalf("backends replaced %d times after a failed %s list", lb.sets, resource)
+			}
+			if servers := lb.GetBackendServers(); len(servers) != 1 || servers[0] != known {
+				t.Fatal("known backends were lost")
+			}
+		})
 	}
 }
 
