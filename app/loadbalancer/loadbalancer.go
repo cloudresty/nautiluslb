@@ -115,25 +115,32 @@ func dialTimeoutFor(requestTimeout time.Duration) time.Duration {
 
 }
 
-// Start listens and serves until Stop is called. It panics if the listener
-// cannot be opened, which only happens at startup.
-func (lb *LoadBalancer) Start() {
+// Listen binds the listener and starts health checks, without serving. It
+// returns the bind error (typically the port is in use) so the caller can
+// fail startup cleanly. After Stop it binds nothing and returns nil.
+func (lb *LoadBalancer) Listen() error {
 
 	listenConfig := net.ListenConfig{KeepAliveConfig: keepAlive}
 	listener, err := listenConfig.Listen(context.Background(), "tcp", lb.ListenerAddress)
 	if err != nil {
-		emit.Error.StructuredFields("Failed to listen on port",
-			emit.ZString("port", utils.ExtractPort(lb.ListenerAddress)),
-			emit.ZString("error", err.Error()))
-		panic(fmt.Sprintf("Failed to listen on port '%s': %v", utils.ExtractPort(lb.ListenerAddress), err))
+		return fmt.Errorf("listening on %s: %w", lb.ListenerAddress, err)
 	}
 
 	if !lb.begin(listener) {
 		_ = listener.Close()
-		return
 	}
 
-	lb.Serve(listener)
+	return nil
+
+}
+
+// Start serves the listener bound by Listen until Stop is called. It does
+// nothing if Listen bound none (Stop ran first).
+func (lb *LoadBalancer) Start() {
+
+	if listener := lb.GetListener(); listener != nil {
+		lb.Serve(listener)
+	}
 
 }
 

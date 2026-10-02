@@ -638,3 +638,22 @@ func TestConcurrentDiscoveryHealthAndSelection(t *testing.T) {
 	close(stop)
 	wg.Wait()
 }
+
+func TestListenReportsBindFailure(t *testing.T) {
+	taken, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer func() { _ = taken.Close() }()
+
+	cfg := testConfig()
+	cfg.ListenerAddress = taken.Addr().String()
+	lb := NewLoadBalancer(cfg, time.Second)
+
+	if err := lb.Listen(); err == nil {
+		t.Fatal("Listen succeeded on a port in use")
+	}
+	if lb.GetListener() != nil {
+		t.Fatal("listener recorded after a failed bind")
+	}
+}

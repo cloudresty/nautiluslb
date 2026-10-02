@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/cloudresty/emit"
+	"github.com/cloudresty/nautiluslb/config"
 	"github.com/cloudresty/nautiluslb/kubernetes"
 	"github.com/cloudresty/nautiluslb/loadbalancer"
 	"github.com/cloudresty/nautiluslb/utils"
@@ -35,8 +37,16 @@ func main() {
 		fmt.Println()
 		fmt.Println("Configuration:")
 		fmt.Println("  The application reads configuration from config.yaml in the current directory.")
-		fmt.Println("  It automatically discovers Kubernetes services with the annotation:")
-		fmt.Println("  nautiluslb.cloudresty.io/enabled=true")
+		fmt.Println("  Each configuration must list the namespaces it discovers Services in")
+		fmt.Println("  (namespaces: [a, b]), or namespaces: [\"*\"] for cluster-wide discovery.")
+		fmt.Println()
+		fmt.Println("  A Service is a backend of a configuration only when all of these hold:")
+		fmt.Println("    " + config.ServiceEnabledAnnotation + ": \"true\"")
+		fmt.Println("    " + config.ServiceConfigurationsAnnotation + ": \"<name>[,<name>...]\" names the configuration")
+		fmt.Println("    the Service is in one of the configuration's namespaces")
+		fmt.Println("    a Service port is named the configuration's backendPortName")
+		fmt.Println()
+		fmt.Println("  See config.example.yaml for a complete example.")
 		fmt.Println()
 		fmt.Println("For more information, visit: https://github.com/cloudresty/nautiluslb")
 		os.Exit(0)
@@ -87,36 +97,63 @@ func main() {
 
 	for _, backendConfig := range configData.BackendConfigurations {
 
-		wg.Add(1)
-
 		// Parse the duration string into a time.Duration
 		duration := time.Duration(backendConfig.RequestTimeout) * time.Second
 
-		lb := loadbalancer.NewLoadBalancer(backendConfig, duration)
-		loadBalancers = append(loadBalancers, lb)
+		loadBalancers = append(loadBalancers, loadbalancer.NewLoadBalancer(backendConfig, duration))
 
-		// Start the load balancer
+	}
+
+	// Bind every listener before serving any, so a port in use is a clear
+	// startup error rather than a crash in a goroutine.
+	if addr, err := bindAll(loadBalancers); err != nil {
+		emit.Error.StructuredFields("Failed to bind listener",
+			emit.ZString("listener_addr", addr),
+			emit.ZString("error", err.Error()))
+		os.Exit(1)
+	}
+
+	for i, lb := range loadBalancers {
+
+		wg.Add(1)
 		go func(lb *loadbalancer.LoadBalancer) {
 			defer wg.Done()
 			lb.Start()
 		}(lb)
 
 		emit.Info.StructuredFields("Started load balancer",
-			emit.ZString("config_name", backendConfig.Name),
-			emit.ZString("listener_port", utils.ExtractPort(backendConfig.ListenerAddress)))
+			emit.ZString("config_name", configData.BackendConfigurations[i].Name),
+			emit.ZString("listener_port", utils.ExtractPort(lb.ListenerAddress)))
 
 	}
 
 	// Start centralized service discovery for all load balancers
+	discoveryCtx, stopDiscovery := context.WithCancel(context.Background())
 	var lbInterfaces []kubernetes.LoadBalancerInterface
 	for _, lb := range loadBalancers {
 		lbInterfaces = append(lbInterfaces, lb)
 	}
-	go kubernetes.DiscoverK8sServicesForAll(lbInterfaces, configData.BackendConfigurations)
+	discoveryDone := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(discoveryDone)
+		kubernetes.DiscoverK8sServicesForAll(discoveryCtx, lbInterfaces, configData.BackendConfigurations)
+	}()
 
 	sig := <-sigChan
 	emit.Info.StructuredFields("Shutting down gracefully...",
 		emit.ZString("signal", sig.String()))
+
+	// Stop discovery and wait for it to exit, so it cannot update a load
+	// balancer being stopped. The wait is bounded: in-flight API calls return
+	// promptly once the context is cancelled, but shutdown must never hang.
+	stopDiscovery()
+	select {
+	case <-discoveryDone:
+	case <-time.After(5 * time.Second):
+		emit.Warn.Msg("Service discovery did not stop within 5s, continuing shutdown")
+	}
 
 	// Stop the load balancers that are actually running. Connections being
 	// proxied end when the process exits.
@@ -130,5 +167,22 @@ func main() {
 
 	emit.Info.Msg("Shutdown complete.")
 	os.Exit(0)
+
+}
+
+// bindAll binds every load balancer's listener. If any bind fails, the ones
+// already bound are stopped, and the failing listener address is returned.
+func bindAll(loadBalancers []*loadbalancer.LoadBalancer) (string, error) {
+
+	for i, lb := range loadBalancers {
+		if err := lb.Listen(); err != nil {
+			for _, bound := range loadBalancers[:i] {
+				bound.Stop()
+			}
+			return lb.ListenerAddress, fmt.Errorf("binding listener: %w", err)
+		}
+	}
+
+	return "", nil
 
 }

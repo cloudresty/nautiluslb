@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -113,29 +115,6 @@ const discoveryInterval = 30 * time.Second
 // its own, so a hung API server would otherwise stop discovery for good.
 const apiTimeout = 30 * time.Second
 
-// matchesLabelSelector checks if service labels match the given label selector
-func matchesLabelSelector(serviceLabels map[string]string, labelSelector string) bool {
-	if labelSelector == "" {
-		return true // Empty selector matches everything
-	}
-
-	// Parse label selector (format: "key1=value1,key2=value2")
-	pairs := strings.Split(labelSelector, ",")
-	for _, pair := range pairs {
-		parts := strings.SplitN(strings.TrimSpace(pair), "=", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		key := strings.TrimSpace(parts[0])
-		value := strings.TrimSpace(parts[1])
-
-		if serviceLabels[key] != value {
-			return false
-		}
-	}
-	return true
-}
-
 func getNodeIPs(ctx context.Context, k8sClient kubernetes.Interface) ([]string, error) {
 
 	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
@@ -161,8 +140,64 @@ func getNodeIPs(ctx context.Context, k8sClient kubernetes.Interface) ([]string, 
 
 }
 
-// DiscoverK8sServicesForAll discovers services for all load balancers centrally
-func DiscoverK8sServicesForAll(loadBalancers []LoadBalancerInterface, configs []config.Configuration) {
+// warnTracker remembers what has been warned about, so a misconfigured
+// Service is reported once rather than on every 30s pass. A changed value
+// (the annotation was edited, still wrongly) warns again.
+//
+// Keys touched during a pass are remembered so endPass can drop the ones whose
+// Service is gone, keeping the tracker bounded under Service churn.
+type warnTracker struct {
+	mu      sync.Mutex
+	seen    map[string]string
+	touched map[string]struct{}
+}
+
+func newWarnTracker() *warnTracker {
+	return &warnTracker{seen: make(map[string]string), touched: make(map[string]struct{})}
+}
+
+// beginPass starts tracking which keys a discovery pass touches.
+func (w *warnTracker) beginPass() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.touched = make(map[string]struct{})
+}
+
+// endPass finishes a pass. With prune set, keys not touched during the pass are
+// dropped. A pass that could not list every Service must not prune: the
+// Services it missed would warn again on the next pass.
+func (w *warnTracker) endPass(prune bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if prune {
+		for key := range w.seen {
+			if _, ok := w.touched[key]; !ok {
+				delete(w.seen, key)
+			}
+		}
+	}
+	w.touched = make(map[string]struct{})
+}
+
+// shouldWarn reports whether key has not yet been warned about with value,
+// and records it.
+func (w *warnTracker) shouldWarn(key, value string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.touched[key] = struct{}{}
+	if old, ok := w.seen[key]; ok && old == value {
+		return false
+	}
+	w.seen[key] = value
+	return true
+}
+
+// DiscoverK8sServicesForAll discovers services for all load balancers
+// centrally, until ctx is cancelled. The first pass runs immediately.
+func DiscoverK8sServicesForAll(ctx context.Context, loadBalancers []LoadBalancerInterface, configs []config.Configuration) {
 
 	emit.Info.Msg("Starting centralized service discovery for all load balancers")
 
@@ -176,162 +211,357 @@ func DiscoverK8sServicesForAll(loadBalancers []LoadBalancerInterface, configs []
 
 	// Create a map of config name to load balancer for quick lookup
 	configToLB := make(map[string]LoadBalancerInterface)
-	for i, config := range configs {
+	for i, cfg := range configs {
 		if i < len(loadBalancers) {
-			configToLB[config.Name] = loadBalancers[i]
+			configToLB[cfg.Name] = loadBalancers[i]
 		}
 	}
 
-	// Group configs by namespace for efficient API calls
-	namespaceConfigs := make(map[string][]config.Configuration)
-	for _, cfg := range configs {
-		namespace := cfg.Namespace
-		if namespace == "" {
-			namespace = "all" // Special key for all namespaces
-		}
-		namespaceConfigs[namespace] = append(namespaceConfigs[namespace], cfg)
-	}
+	runDiscovery(ctx, k8sClient, configs, configToLB, discoveryInterval)
+}
 
-	// Main discovery loop
+// runDiscovery runs a pass immediately and then every interval until ctx is
+// cancelled.
+func runDiscovery(ctx context.Context, k8sClient kubernetes.Interface, configs []config.Configuration, configToLB map[string]LoadBalancerInterface, interval time.Duration) {
+
+	warned := newWarnTracker()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
 	for {
 
-		discoverOnce(context.Background(), k8sClient, namespaceConfigs, configToLB)
+		discoverOnce(ctx, k8sClient, configs, configToLB, warned)
 
-		time.Sleep(discoveryInterval)
+		select {
+		case <-ctx.Done():
+			emit.Info.Msg("Service discovery stopped")
+			return
+		case <-ticker.C:
+		}
+
 	}
+
+}
+
+// listResult is the outcome of listing the Services of one namespace.
+type listResult struct {
+	services []corev1.Service
+	err      error
 }
 
 // discoverOnce runs one discovery pass. Node IPs are listed once per pass.
 // If that fails the pass is skipped: an empty node list would otherwise
 // replace every NodePort backend with nothing, turning an API blip (or an
 // expired credential) into an outage.
-func discoverOnce(ctx context.Context, k8sClient kubernetes.Interface, namespaceConfigs map[string][]config.Configuration, configToLB map[string]LoadBalancerInterface) {
+//
+// Services are listed once per distinct namespace any configuration needs
+// (the cluster-wide list is fetched only for cluster-wide configurations, so a
+// scoped configuration never depends on cluster-scope RBAC). Each
+// configuration then gets the backends from ALL its namespaces in a single
+// SetBackendServers call, and is left untouched if any list it needs failed:
+// a partial result would silently drop the other namespaces' backends.
+func discoverOnce(ctx context.Context, k8sClient kubernetes.Interface, configs []config.Configuration, configToLB map[string]LoadBalancerInterface, warned *warnTracker) {
 
 	nodeIPs, err := getNodeIPs(ctx, k8sClient)
 	if err != nil {
-		emit.Error.StructuredFields("Failed to list nodes, keeping current backends",
-			emit.ZString("error", err.Error()))
+		if ctx.Err() == nil {
+			emit.Error.StructuredFields("Failed to list nodes, keeping current backends",
+				emit.ZString("error", err.Error()))
+		}
 		return
 	}
 
-	for namespace, nsConfigs := range namespaceConfigs {
-		discoverServicesForNamespace(ctx, k8sClient, namespace, nsConfigs, configToLB, nodeIPs)
+	warned.beginPass()
+
+	// Distinct namespaces to list.
+	var namespaces []string
+	for _, cfg := range configs {
+		for _, ns := range cfg.DiscoveryNamespaces() {
+			if !slices.Contains(namespaces, ns) {
+				namespaces = append(namespaces, ns)
+			}
+		}
+	}
+
+	allListed := true
+	lists := make(map[string]listResult, len(namespaces))
+	for _, ns := range namespaces {
+		services, err := listServices(ctx, k8sClient, ns)
+		if err != nil {
+			allListed = false
+			if ctx.Err() != nil {
+				return
+			}
+			emit.Error.StructuredFields("Failed to list services in centralized discovery, keeping current backends of the configurations that need them",
+				emit.ZString("namespace", ns),
+				emit.ZString("error", err.Error()))
+		}
+		lists[ns] = listResult{services: services, err: err}
+	}
+
+	warnUnbound(lists, configs, warned)
+	defer func() { warned.endPass(allListed) }()
+
+	for _, cfg := range configs {
+
+		lb, exists := configToLB[cfg.Name]
+		if !exists {
+			continue
+		}
+
+		services, ok := servicesFor(lists, cfg.DiscoveryNamespaces())
+		if !ok {
+			continue
+		}
+
+		backends := processServicesForConfig(services, cfg, nodeIPs, warned)
+		currentBackends := lb.GetBackendServers()
+
+		// Only update if backends changed. SetBackendServers also
+		// starts and stops the matching health checks.
+		if !backendsEqual(currentBackends, backends) {
+			lb.SetBackendServers(backends)
+			emit.Info.StructuredFields("Updated backends for config",
+				emit.ZInt("backend_count", len(backends)),
+				emit.ZString("config_name", cfg.Name))
+		}
+
 	}
 
 }
 
-// discoverServicesForNamespace discovers services in a specific namespace for centralized discovery
-func discoverServicesForNamespace(ctx context.Context, k8sClient kubernetes.Interface, namespace string, configs []config.Configuration, configToLB map[string]LoadBalancerInterface, nodeIPs []string) {
-	// Use empty string for all namespaces
-	searchNamespace := namespace
-	if namespace == "all" {
-		searchNamespace = ""
-	}
+func listServices(ctx context.Context, k8sClient kubernetes.Interface, namespace string) ([]corev1.Service, error) {
 
 	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
 	defer cancel()
 
-	services, err := k8sClient.CoreV1().Services(searchNamespace).List(ctx, metav1.ListOptions{})
+	list, err := k8sClient.CoreV1().Services(namespace).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		emit.Error.StructuredFields("Failed to list services in centralized discovery, keeping current backends",
-			emit.ZString("namespace", namespace),
-			emit.ZString("error", err.Error()))
-		return
+		return nil, fmt.Errorf("listing services in namespace %q: %w", namespace, err)
 	}
 
-	// Process each configuration
-	for _, cfg := range configs {
-		backends := processServicesForConfig(services.Items, cfg, nodeIPs)
+	return list.Items, nil
 
-		// Update the corresponding LoadBalancer
-		if lb, exists := configToLB[cfg.Name]; exists {
-			currentBackends := lb.GetBackendServers()
-
-			// Only update if backends changed. SetBackendServers also
-			// starts and stops the matching health checks.
-			if !backendsEqual(currentBackends, backends) {
-				lb.SetBackendServers(backends)
-				emit.Info.StructuredFields("Updated backends for config",
-					emit.ZInt("backend_count", len(backends)),
-					emit.ZString("config_name", cfg.Name))
-			}
-		}
-	}
 }
 
-// processServicesForConfig processes services for a specific configuration in centralized discovery
-func processServicesForConfig(services []corev1.Service, cfg config.Configuration, nodeIPs []string) []*backend.BackendServer {
-	var backends []*backend.BackendServer
-	backendID := 1
+// servicesFor gathers the Services of the given namespaces from lists. It
+// reports false if any list needed failed. A configuration only ever uses the
+// lists of its own namespaces.
+func servicesFor(lists map[string]listResult, namespaces []string) ([]corev1.Service, bool) {
+
+	var services []corev1.Service
+	for _, ns := range namespaces {
+		res, ok := lists[ns]
+		if !ok || res.err != nil {
+			return nil, false
+		}
+		services = append(services, res.services...)
+	}
+
+	return services, true
+
+}
+
+// splitConfigurations parses the configurations annotation: comma-separated,
+// whitespace-trimmed, empty entries ignored.
+func splitConfigurations(value string) []string {
+
+	var names []string
+	for _, name := range strings.Split(value, ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			names = append(names, name)
+		}
+	}
+
+	return names
+
+}
+
+// warnUnbound warns, once per Service, about enabled Services that name none
+// of the known configurations, or that name a known configuration whose
+// namespaces allowlist excludes the Service's namespace: they would otherwise
+// be ignored silently. The second case is only observable when the Service was
+// listed for another configuration.
+func warnUnbound(lists map[string]listResult, configs []config.Configuration, warned *warnTracker) {
+
+	known := make(map[string]bool, len(configs))
+	byName := make(map[string]config.Configuration, len(configs))
+	for _, cfg := range configs {
+		known[cfg.Name] = true
+		byName[cfg.Name] = cfg
+	}
+
+	for _, res := range lists {
+		for _, service := range res.services {
+
+			if service.Annotations[config.ServiceEnabledAnnotation] != "true" {
+				continue
+			}
+
+			value := service.Annotations[config.ServiceConfigurationsAnnotation]
+
+			for _, name := range splitConfigurations(value) {
+				cfg, ok := byName[name]
+				if !ok {
+					continue
+				}
+				namespaces := cfg.DiscoveryNamespaces()
+				if slices.Contains(namespaces, metav1.NamespaceAll) || slices.Contains(namespaces, service.Namespace) {
+					continue
+				}
+				if warned.shouldWarn("namespace/"+name+"/"+service.Namespace+"/"+service.Name, "") {
+					emit.Warn.StructuredFields("Service names configuration "+name+" but its namespace is not in that configuration's namespaces allowlist; ignoring",
+						emit.ZString("namespace", service.Namespace),
+						emit.ZString("service_name", service.Name),
+						emit.ZString("config_name", name))
+				}
+			}
+
+			if slices.ContainsFunc(splitConfigurations(value), func(name string) bool { return known[name] }) {
+				continue
+			}
+
+			if warned.shouldWarn("binding/"+service.Namespace+"/"+service.Name, value) {
+				emit.Warn.StructuredFields("Service is enabled but names no known configuration, ignoring it. "+
+					"Add the annotation "+config.ServiceConfigurationsAnnotation+"=<configuration name>[,<name>...]",
+					emit.ZString("namespace", service.Namespace),
+					emit.ZString("service_name", service.Name),
+					emit.ZString("configurations_annotation", value))
+			}
+
+		}
+	}
+
+}
+
+// boundTo reports whether service is a backend of cfg: it is enabled, names
+// cfg in its configurations annotation, and lives in a namespace cfg allows.
+// The port name alone never binds a Service: any tenant could otherwise name a
+// port "https" and receive a share of the public listener's traffic.
+func boundTo(service corev1.Service, cfg config.Configuration) bool {
+
+	if service.Annotations[config.ServiceEnabledAnnotation] != "true" {
+		return false
+	}
+
+	if !slices.Contains(splitConfigurations(service.Annotations[config.ServiceConfigurationsAnnotation]), cfg.Name) {
+		return false
+	}
+
+	namespaces := cfg.DiscoveryNamespaces()
+	return slices.Contains(namespaces, metav1.NamespaceAll) || slices.Contains(namespaces, service.Namespace)
+
+}
+
+// processServicesForConfig builds the backends of one configuration from
+// services, in a deterministic order.
+func processServicesForConfig(services []corev1.Service, cfg config.Configuration, nodeIPs []string, warned *warnTracker) []*backend.BackendServer {
+
+	type entry struct {
+		namespace, service string
+		server             *backend.BackendServer
+	}
+
+	var entries []entry
 
 	for _, service := range services {
-		// Check for annotation
-		if enabled, ok := service.Annotations["nautiluslb.cloudresty.io/enabled"]; !ok || enabled != "true" {
+
+		if !boundTo(service, cfg) {
 			continue
 		}
 
-		// Process the service based on type
-		serviceBackends := processServiceForConfig(service, cfg, nodeIPs, &backendID)
-		backends = append(backends, serviceBackends...)
+		for _, server := range processServiceForConfig(service, cfg, nodeIPs, warned) {
+			entries = append(entries, entry{service.Namespace, service.Name, server})
+		}
+
+	}
+
+	slices.SortFunc(entries, func(a, b entry) int {
+		if c := strings.Compare(a.namespace, b.namespace); c != 0 {
+			return c
+		}
+		if c := strings.Compare(a.service, b.service); c != 0 {
+			return c
+		}
+		if a.server.Port != b.server.Port {
+			return a.server.Port - b.server.Port
+		}
+		return strings.Compare(a.server.IP, b.server.IP)
+	})
+
+	backends := make([]*backend.BackendServer, 0, len(entries))
+	for i, e := range entries {
+		e.server.ID = i + 1
+		backends = append(backends, e.server)
 	}
 
 	return backends
+
 }
 
-// processServiceForConfig processes a single service for centralized discovery
-func processServiceForConfig(service corev1.Service, cfg config.Configuration, nodeIPs []string, backendID *int) []*backend.BackendServer {
+// processServiceForConfig builds the backends of one bound service.
+func processServiceForConfig(service corev1.Service, cfg config.Configuration, nodeIPs []string, warned *warnTracker) []*backend.BackendServer {
 	var backends []*backend.BackendServer
 
 	switch service.Spec.Type {
 	case corev1.ServiceTypeNodePort, corev1.ServiceTypeLoadBalancer:
 		for _, port := range service.Spec.Ports {
-			if port.Name != cfg.BackendPortName {
+			// NodePort is 0 when node port allocation is disabled
+			// (allocateLoadBalancerNodePorts=false).
+			if port.Name != cfg.BackendPortName || port.NodePort == 0 {
 				continue
 			}
 
 			for _, nodeIP := range nodeIPs {
-				backends = append(backends, backend.New(*backendID, nodeIP, int(port.NodePort), port.Name))
-				*backendID++
+				backends = append(backends, backend.New(0, nodeIP, int(port.NodePort), port.Name))
 			}
 		}
 
 	case corev1.ServiceTypeClusterIP:
+		// A headless Service has no virtual IP to dial.
+		if service.Spec.ClusterIP == "" || service.Spec.ClusterIP == corev1.ClusterIPNone {
+			break
+		}
+
 		for _, port := range service.Spec.Ports {
-			if port.Name != cfg.BackendPortName {
+			// The ClusterIP listens on port.Port; TargetPort is the pod's.
+			if port.Name != cfg.BackendPortName || port.Port <= 0 {
 				continue
 			}
 
-			if port.TargetPort.IntVal > 0 {
-				backends = append(backends, backend.New(*backendID, service.Spec.ClusterIP, int(port.TargetPort.IntVal), port.Name))
-				*backendID++
-			}
+			backends = append(backends, backend.New(0, service.Spec.ClusterIP, int(port.Port), port.Name))
 		}
 
 	default:
-		emit.Warn.StructuredFields("Unsupported service type in centralized discovery",
-			emit.ZString("service_type", string(service.Spec.Type)),
-			emit.ZString("service_name", service.Name))
+		if warned.shouldWarn("type/"+service.Namespace+"/"+service.Name, string(service.Spec.Type)) {
+			emit.Warn.StructuredFields("Unsupported service type in centralized discovery, ignoring it",
+				emit.ZString("service_type", string(service.Spec.Type)),
+				emit.ZString("namespace", service.Namespace),
+				emit.ZString("service_name", service.Name))
+		}
 	}
 
 	return backends
 }
 
-// backendsEqual compares two backend slices for centralized discovery
+// backendsEqual reports whether two backend slices hold the same multiset of
+// address and port name, regardless of order.
 func backendsEqual(old, new []*backend.BackendServer) bool {
 	if len(old) != len(new) {
 		return false
 	}
 
-	// Create maps for comparison
-	oldMap := make(map[string]*backend.BackendServer)
+	counts := make(map[string]int, len(old))
 	for _, b := range old {
-		oldMap[b.Address()+"/"+b.PortName] = b
+		counts[b.Address()+"/"+b.PortName]++
 	}
 
 	for _, b := range new {
-		if _, exists := oldMap[b.Address()+"/"+b.PortName]; !exists {
+		key := b.Address() + "/" + b.PortName
+		if counts[key] == 0 {
 			return false
 		}
+		counts[key]--
 	}
 
 	return true
