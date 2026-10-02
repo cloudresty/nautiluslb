@@ -106,6 +106,8 @@ configurations:
     backendPortName: dns-udp      # Service port must be protocol UDP
     udp:
       sessionIdleTimeout: 60s
-      maxSessions: 0
+      # Per-listener cap (default 4096; 0 = unlimited, warned about at load).
+      # Memory is about maxSessions x (bufferSize + ~10KB per session).
+      maxSessions: 4096
       maxSessionsPerSource: 0
       bufferSize: 65535

@@ -92,7 +92,11 @@ func (r *roundRobin) build(healthy []*backend.Backend) *rrState {
 
 func (r *roundRobin) get(healthy []*backend.Backend) *rrState {
 	st := r.state.Load()
-	if st == nil || st.id != identOf(healthy) {
+	if st == nil || len(st.sched) == 0 {
+		// Pick before any Rebuild (or after one over an empty set): nothing
+		// to be stale against, build from this view. Never rebuild otherwise
+		// (see Pick): a Pick holding an older view must not overwrite newer
+		// state.
 		st = r.build(healthy)
 		r.state.Store(st)
 		return st
@@ -103,7 +107,7 @@ func (r *roundRobin) get(healthy []*backend.Backend) *rrState {
 			step = 50 * time.Millisecond
 		}
 		if r.opts.Now().UnixNano()-st.builtAt >= int64(step) && r.rebuilding.CompareAndSwap(false, true) {
-			st = r.build(healthy)
+			st = r.build(st.healthy) // same membership; only the ramped weights move
 			r.state.Store(st)
 			r.rebuilding.Store(false)
 		}
@@ -111,6 +115,12 @@ func (r *roundRobin) get(healthy []*backend.Backend) *rrState {
 	return st
 }
 
+// Pick uses the schedule from the latest Rebuild even if snap is a view older
+// or newer than it: for the microseconds between a publish's Rebuild and its
+// view store (or the reverse for a stale reader) it may return a backend that
+// was just ejected or just removed from the pool. That is acceptable: an
+// ejected backend fails its dial and is retried elsewhere, and a removed
+// Backend is still a valid object whose dial fails fast.
 func (r *roundRobin) Pick(snap *backend.Snapshot, _ Key, n int) []*backend.Backend {
 	if n <= 0 || len(snap.Healthy) == 0 {
 		return nil

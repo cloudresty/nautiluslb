@@ -244,6 +244,7 @@ func TestPickSkipsOverCap(t *testing.T) {
 			}
 			bs[1] = nil
 			all := backend.NewSnapshot([]*backend.Backend{bs[0], bs[2]})
+			p.Rebuild(all) // the publisher rebuilds before the view is used
 			if got := p.Pick(all, Key{}, 3); got != nil {
 				t.Fatalf("all over cap should return nil, got %v", addrs(got))
 			}
@@ -291,32 +292,79 @@ func TestPickWithoutRebuildAndFailOpen(t *testing.T) {
 			t.Fatal("no healthy: must return nil")
 		}
 		open := &backend.Snapshot{All: snap.All, Healthy: snap.All}
+		p.Rebuild(open)
 		if got := p.Pick(open, Key{}, 3); len(got) != 2 {
 			t.Fatalf("%s fail-open got %d", alg, len(got))
 		}
 	}
 }
 
-func benchPick(b *testing.B, alg string) {
-	snap := backend.NewSnapshot(pool(1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
-	p := mustNew(b, alg, Options{})
+func TestSourceIPHashRebuildNoopOnHealthChange(t *testing.T) {
+	bs := pool(1, 2, 3, 4, 5)
+	p := mustNew(t, "source_ip_hash", Options{}).(*sourceIPHash)
+	p.Rebuild(backend.NewSnapshot(bs))
+	st := p.state.Load()
+	bs[2].SetHealthy(false, backend.CauseProbe)
+	snap := backend.NewSnapshot(bs) // fresh All slice, same membership, one fewer healthy
 	p.Rebuild(snap)
-	b.ReportAllocs()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			i++
-			if len(p.Pick(snap, ipKey(i), 3)) == 0 {
-				b.Fatal("empty")
-			}
-		}
-	})
+	if got := p.state.Load(); len(got.ring) != len(st.ring) || &got.ring[0] != &st.ring[0] {
+		t.Fatal("ring was rebuilt on a health change")
+	}
+	if allocs := testing.AllocsPerRun(20, func() { p.Rebuild(snap) }); allocs != 0 {
+		t.Fatalf("unchanged Rebuild allocates %v", allocs)
+	}
+	// a weight change is a membership change
+	bs2 := pool(1, 2, 3, 4, 9)
+	p.Rebuild(backend.NewSnapshot(bs2))
+	if &p.state.Load().ring[0] == &st.ring[0] {
+		t.Fatal("ring not rebuilt on weight change")
+	}
 }
 
-func BenchmarkPickRoundRobin(b *testing.B) { benchPick(b, "round_robin") }
-func BenchmarkPickLeastConn(b *testing.B)  { benchPick(b, "least_conn") }
-func BenchmarkPickSourceIPHash(b *testing.B) {
-	benchPick(b, "source_ip_hash")
+func TestSourceIPHashSkipsUnhealthy(t *testing.T) {
+	bs := pool(1, 1, 1, 1, 1)
+	p := mustNew(t, "source_ip_hash", Options{})
+	p.Rebuild(backend.NewSnapshot(bs))
+	// reference: ring built from the 4 healthy backends alone
+	ref := mustNew(t, "source_ip_hash", Options{})
+	refSnap := backend.NewSnapshot(bs[1:])
+	ref.Rebuild(refSnap)
+	bs[0].SetHealthy(false, backend.CauseProbe)
+	snap := backend.NewSnapshot(bs)
+	for i := 0; i < 2000; i++ {
+		got := p.Pick(snap, ipKey(i), 2)
+		for _, b := range got {
+			if b == bs[0] {
+				t.Fatalf("key %d picked an unhealthy backend", i)
+			}
+		}
+		if want := ref.Pick(refSnap, ipKey(i), 2); fmt.Sprint(addrs(got)) != fmt.Sprint(addrs(want)) {
+			t.Fatalf("key %d: %v, healthy-only ring says %v", i, addrs(got), addrs(want))
+		}
+	}
 }
-func BenchmarkPickP2C(b *testing.B) { benchPick(b, "random_two_choices") }
+
+func TestSourceIPHashFailOpen(t *testing.T) {
+	bs := pool(1, 1, 1)
+	for _, b := range bs {
+		b.SetHealthy(false, backend.CauseProbe)
+	}
+	snap := backend.NewSnapshot(bs)
+	p := mustNew(t, "source_ip_hash", Options{})
+	open := &backend.Snapshot{All: snap.All, Healthy: snap.All}
+	p.Rebuild(open)
+	if p.Pick(snap, Key{}, 3) != nil {
+		t.Fatal("no healthy and not fail-open: nil")
+	}
+	seen := map[*backend.Backend]bool{}
+	for i := 0; i < 500; i++ {
+		got := p.Pick(open, ipKey(i), 1)
+		if len(got) != 1 {
+			t.Fatal("fail-open must pick unhealthy backends")
+		}
+		seen[got[0]] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("fail-open reached %d backends", len(seen))
+	}
+}

@@ -145,7 +145,7 @@ func roundTrip(t *testing.T, addr string, payload []byte) []byte {
 // The defect this file exists for: a refused dial used to fall through to the
 // copy with a nil connection, and the resulting panic in a goroutine killed
 // the process. If this regresses, the test binary itself dies.
-func TestRefusedBackendClosesClientWithoutCrashing(t *testing.T) {
+func TestRefusedBackendClosesClientWithoutCrashingLegacy(t *testing.T) {
 
 	lb := newTestLB(t, backendAt(t, refusingAddr(t)))
 	addr := serve(t, lb)
@@ -166,7 +166,7 @@ func TestRefusedBackendClosesClientWithoutCrashing(t *testing.T) {
 	_ = conn2.Close()
 }
 
-func TestRefusedBackendFailsOverToNextBackend(t *testing.T) {
+func TestRefusedBackendFailsOverToNextBackendLegacy(t *testing.T) {
 
 	refused := backendAt(t, refusingAddr(t))
 	good := backendAt(t, echoServer(t))
@@ -194,7 +194,7 @@ func blackholeDial(ctx context.Context, _, _ string) (net.Conn, error) {
 	return nil, ctx.Err()
 }
 
-func TestBlackholedBackendIsBoundedByDialTimeout(t *testing.T) {
+func TestBlackholedBackendIsBoundedByDialTimeoutLegacy(t *testing.T) {
 
 	lb := newTestLB(t, backend.NewServer(1, "192.0.2.1", 80, "http"))
 	lb.dialTimeout = 100 * time.Millisecond
@@ -216,7 +216,7 @@ func TestBlackholedBackendIsBoundedByDialTimeout(t *testing.T) {
 	}
 }
 
-func TestBlackholedBackendFailsOverWithinRetryBudget(t *testing.T) {
+func TestBlackholedBackendFailsOverWithinRetryBudgetLegacy(t *testing.T) {
 
 	good := backendAt(t, echoServer(t))
 	hole := backend.NewServer(1, "192.0.2.1", 80, "http")
@@ -245,7 +245,7 @@ func TestBlackholedBackendFailsOverWithinRetryBudget(t *testing.T) {
 	}
 }
 
-func TestEveryBackendFailingStaysWithinRetryBudget(t *testing.T) {
+func TestEveryBackendFailingStaysWithinRetryBudgetLegacy(t *testing.T) {
 
 	var backends []*backend.BackendServer
 	for i := range 5 {
@@ -284,7 +284,7 @@ type panicWriteConn struct{ net.Conn }
 
 func (panicWriteConn) Write([]byte) (int, error) { panic("boom on write") }
 
-func TestPanicWhileProxyingIsContainedToTheConnection(t *testing.T) {
+func TestPanicWhileProxyingIsContainedToTheConnectionLegacy(t *testing.T) {
 
 	wrappers := map[string]func(net.Conn) net.Conn{
 		"backend read":  func(c net.Conn) net.Conn { return panicReadConn{c} },
@@ -324,7 +324,7 @@ func TestPanicWhileProxyingIsContainedToTheConnection(t *testing.T) {
 
 // A panic outside the copy loops (here, in the dial) is caught by the
 // handler's own recover.
-func TestPanicBeforeProxyingIsContained(t *testing.T) {
+func TestPanicBeforeProxyingIsContainedLegacy(t *testing.T) {
 
 	lb := newTestLB(t, backend.NewServer(1, "192.0.2.1", 80, "http"))
 	lb.dial = func(context.Context, string, string) (net.Conn, error) { panic("boom in dial") }
@@ -347,7 +347,7 @@ func TestPanicBeforeProxyingIsContained(t *testing.T) {
 	waitClosed(t, client, 3*time.Second)
 }
 
-func TestHalfCloseIsForwardedAndBothSidesFinish(t *testing.T) {
+func TestHalfCloseIsForwardedAndBothSidesFinishLegacy(t *testing.T) {
 
 	lb := newTestLB(t, backendAt(t, echoServer(t)))
 	addr := serve(t, lb)
@@ -361,7 +361,7 @@ func TestHalfCloseIsForwardedAndBothSidesFinish(t *testing.T) {
 
 // A backend that dies mid-connection must close the client connection too,
 // rather than leaving it, and a goroutine, hanging.
-func TestBackendResetClosesClient(t *testing.T) {
+func TestBackendResetClosesClientLegacy(t *testing.T) {
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -390,7 +390,7 @@ func TestBackendResetClosesClient(t *testing.T) {
 	waitClosed(t, conn, 5*time.Second)
 }
 
-func TestNoGoroutineLeakAfterConnections(t *testing.T) {
+func TestNoGoroutineLeakAfterConnectionsLegacy(t *testing.T) {
 
 	lb := newTestLB(t, backendAt(t, echoServer(t)), backendAt(t, refusingAddr(t)))
 	addr := serve(t, lb)
@@ -421,7 +421,7 @@ func TestNoGoroutineLeakAfterConnections(t *testing.T) {
 	}
 }
 
-func TestDialTimeoutFor(t *testing.T) {
+func TestDialTimeoutForLegacy(t *testing.T) {
 	tests := []struct {
 		in, want time.Duration
 	}{
@@ -437,7 +437,7 @@ func TestDialTimeoutFor(t *testing.T) {
 	}
 }
 
-func TestNextBackendsRoundRobinSkipsUnhealthy(t *testing.T) {
+func TestNextBackendsRoundRobinSkipsUnhealthyLegacy(t *testing.T) {
 
 	a := backend.NewServer(1, "10.0.0.1", 80, "http")
 	b := backend.NewServer(2, "10.0.0.2", 80, "http")
@@ -472,7 +472,7 @@ func TestNextBackendsRoundRobinSkipsUnhealthy(t *testing.T) {
 	}
 }
 
-func TestNextBackendsFallsBackWhenNoneHealthy(t *testing.T) {
+func TestNextBackendsFallsBackWhenNoneHealthyLegacy(t *testing.T) {
 
 	a := backend.NewServer(1, "10.0.0.1", 80, "http")
 	b := backend.NewServer(2, "10.0.0.2", 80, "http")
@@ -486,7 +486,7 @@ func TestNextBackendsFallsBackWhenNoneHealthy(t *testing.T) {
 	}
 }
 
-func TestNextBackendsEmpty(t *testing.T) {
+func TestNextBackendsEmptyLegacy(t *testing.T) {
 	lb := newTestLB(t)
 	if got := lb.getNextBackend(); got != nil {
 		t.Error("expected nil with no backends")
@@ -495,7 +495,7 @@ func TestNextBackendsEmpty(t *testing.T) {
 
 // Rediscovering the same backends must keep their objects, and so their
 // health state and running health check.
-func TestSetBackendServersPreservesKnownBackends(t *testing.T) {
+func TestSetBackendServersPreservesKnownBackendsLegacy(t *testing.T) {
 
 	lb := newTestLB(t, backend.NewServer(1, "10.0.0.1", 80, "http"))
 	original := lb.GetBackendServers()[0]
@@ -518,7 +518,7 @@ func TestSetBackendServersPreservesKnownBackends(t *testing.T) {
 	}
 }
 
-func TestHealthChecksFollowBackendsAndStop(t *testing.T) {
+func TestHealthChecksFollowBackendsAndStopLegacy(t *testing.T) {
 
 	lb := newTestLB(t, backend.NewServer(1, "127.0.0.1", 1, "http"))
 
@@ -566,7 +566,7 @@ func TestHealthChecksFollowBackendsAndStop(t *testing.T) {
 	}
 }
 
-func TestStopBeforeStart(t *testing.T) {
+func TestStopBeforeStartLegacy(t *testing.T) {
 
 	lb := newTestLB(t)
 	lb.Stop()
@@ -584,7 +584,7 @@ func TestStopBeforeStart(t *testing.T) {
 
 // Run under -race: discovery, health checks and connection handlers touch
 // the same backends concurrently.
-func TestConcurrentDiscoveryHealthAndSelection(t *testing.T) {
+func TestConcurrentDiscoveryHealthAndSelectionLegacy(t *testing.T) {
 
 	lb := newTestLB(t, backend.NewServer(1, "10.0.0.1", 80, "http"))
 
@@ -639,7 +639,7 @@ func TestConcurrentDiscoveryHealthAndSelection(t *testing.T) {
 	wg.Wait()
 }
 
-func TestListenReportsBindFailure(t *testing.T) {
+func TestListenReportsBindFailureLegacy(t *testing.T) {
 	taken, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)

@@ -19,7 +19,7 @@ import (
 	"github.com/cloudresty/nautiluslb/internal/config"
 )
 
-func TestBackendsEqual(t *testing.T) {
+func TestLegacyBackendsEqual(t *testing.T) {
 	tests := []struct {
 		name     string
 		old      []*backend.BackendServer
@@ -146,11 +146,11 @@ func TestBackendsEqual(t *testing.T) {
 }
 
 const (
-	enabledKey = config.ServiceEnabledAnnotation
-	configsKey = config.ServiceConfigurationsAnnotation
+	legacyEnabledKey = config.ServiceEnabledAnnotation
+	legacyConfigsKey = config.ServiceConfigurationsAnnotation
 )
 
-func nodeObj(name, ip string) *corev1.Node {
+func legacyNodeObj(name, ip string) *corev1.Node {
 	return &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: name},
 		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
@@ -159,14 +159,14 @@ func nodeObj(name, ip string) *corev1.Node {
 	}
 }
 
-func nodePortSvc(ns, name string, annotations map[string]string, ports ...corev1.ServicePort) *corev1.Service {
+func legacyNodePortSvc(ns, name string, annotations map[string]string, ports ...corev1.ServicePort) *corev1.Service {
 	return &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns, Annotations: annotations},
 		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeNodePort, Ports: ports},
 	}
 }
 
-func addrs(servers []*backend.BackendServer) []string {
+func legacyAddrs(servers []*backend.BackendServer) []string {
 	out := make([]string, 0, len(servers))
 	for _, s := range servers {
 		out = append(out, s.Address())
@@ -174,7 +174,7 @@ func addrs(servers []*backend.BackendServer) []string {
 	return out
 }
 
-func TestBindingMatrix(t *testing.T) {
+func TestLegacyBindingMatrix(t *testing.T) {
 	cfg := config.Configuration{Name: "https", BackendPortName: "https", Namespace: "ingress"}
 	clusterWide := config.Configuration{Name: "https", BackendPortName: "https", Namespaces: []string{"*"}}
 
@@ -185,24 +185,24 @@ func TestBindingMatrix(t *testing.T) {
 		annotations map[string]string
 		want        bool
 	}{
-		{"enabled missing", cfg, "ingress", map[string]string{configsKey: "https"}, false},
-		{"enabled false", cfg, "ingress", map[string]string{enabledKey: "false", configsKey: "https"}, false},
-		{"configurations missing", cfg, "ingress", map[string]string{enabledKey: "true"}, false},
-		{"configurations empty", cfg, "ingress", map[string]string{enabledKey: "true", configsKey: ""}, false},
-		{"configurations only commas", cfg, "ingress", map[string]string{enabledKey: "true", configsKey: " , ,"}, false},
-		{"other names", cfg, "ingress", map[string]string{enabledKey: "true", configsKey: "http,mongo"}, false},
-		{"prefix of name is not a match", cfg, "ingress", map[string]string{enabledKey: "true", configsKey: "https2"}, false},
-		{"exact name", cfg, "ingress", map[string]string{enabledKey: "true", configsKey: "https"}, true},
-		{"spaced list", cfg, "ingress", map[string]string{enabledKey: "true", configsKey: " a , https "}, true},
-		{"list containing", cfg, "ingress", map[string]string{enabledKey: "true", configsKey: "http,https,mongo"}, true},
-		{"namespace not in allowlist", cfg, "tenant", map[string]string{enabledKey: "true", configsKey: "https"}, false},
-		{"cluster-wide any namespace", clusterWide, "tenant", map[string]string{enabledKey: "true", configsKey: "https"}, true},
-		{"cluster-wide still needs name", clusterWide, "tenant", map[string]string{enabledKey: "true", configsKey: "other"}, false},
+		{"enabled missing", cfg, "ingress", map[string]string{legacyConfigsKey: "https"}, false},
+		{"enabled false", cfg, "ingress", map[string]string{legacyEnabledKey: "false", legacyConfigsKey: "https"}, false},
+		{"configurations missing", cfg, "ingress", map[string]string{legacyEnabledKey: "true"}, false},
+		{"configurations empty", cfg, "ingress", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: ""}, false},
+		{"configurations only commas", cfg, "ingress", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: " , ,"}, false},
+		{"other names", cfg, "ingress", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "http,mongo"}, false},
+		{"prefix of name is not a match", cfg, "ingress", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "https2"}, false},
+		{"exact name", cfg, "ingress", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "https"}, true},
+		{"spaced list", cfg, "ingress", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: " a , https "}, true},
+		{"list containing", cfg, "ingress", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "http,https,mongo"}, true},
+		{"namespace not in allowlist", cfg, "tenant", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "https"}, false},
+		{"cluster-wide any namespace", clusterWide, "tenant", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "https"}, true},
+		{"cluster-wide still needs name", clusterWide, "tenant", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "other"}, false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := nodePortSvc(tt.namespace, "svc", tt.annotations, corev1.ServicePort{Name: "https", NodePort: 30001})
+			svc := legacyNodePortSvc(tt.namespace, "svc", tt.annotations, corev1.ServicePort{Name: "https", NodePort: 30001})
 			backends := processServicesForConfig([]corev1.Service{*svc}, tt.cfg, []string{"10.0.0.1"}, newWarnTracker())
 			if got := len(backends) == 1; got != tt.want {
 				t.Fatalf("bound = %v, want %v", got, tt.want)
@@ -212,26 +212,26 @@ func TestBindingMatrix(t *testing.T) {
 }
 
 // A tenant must not receive public traffic just by naming a port "https".
-func TestTenantCannotHijackListener(t *testing.T) {
+func TestLegacyTenantCannotHijackListener(t *testing.T) {
 	cfg := config.Configuration{Name: "https", BackendPortName: "https", Namespaces: []string{"*"}}
-	ok := map[string]string{enabledKey: "true", configsKey: "https"}
-	tenant := map[string]string{enabledKey: "true"}
+	ok := map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "https"}
+	tenant := map[string]string{legacyEnabledKey: "true"}
 
 	services := []corev1.Service{
-		*nodePortSvc("ingress", "ingress", ok, corev1.ServicePort{Name: "https", NodePort: 30443}),
-		*nodePortSvc("tenant", "evil", tenant, corev1.ServicePort{Name: "https", NodePort: 31111}),
-		*nodePortSvc("tenant", "evil2", map[string]string{enabledKey: "true", configsKey: "mongo"}, corev1.ServicePort{Name: "https", NodePort: 31112}),
+		*legacyNodePortSvc("ingress", "ingress", ok, corev1.ServicePort{Name: "https", NodePort: 30443}),
+		*legacyNodePortSvc("tenant", "evil", tenant, corev1.ServicePort{Name: "https", NodePort: 31111}),
+		*legacyNodePortSvc("tenant", "evil2", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "mongo"}, corev1.ServicePort{Name: "https", NodePort: 31112}),
 	}
 
 	backends := processServicesForConfig(services, cfg, []string{"10.0.0.1"}, newWarnTracker())
-	if got := addrs(backends); len(got) != 1 || got[0] != "10.0.0.1:30443" {
+	if got := legacyAddrs(backends); len(got) != 1 || got[0] != "10.0.0.1:30443" {
 		t.Fatalf("backends = %v, want only 10.0.0.1:30443", got)
 	}
 }
 
-func TestServiceTypes(t *testing.T) {
+func TestLegacyServiceTypes(t *testing.T) {
 	cfg := config.Configuration{Name: "web", BackendPortName: "http", Namespace: "ns"}
-	ann := map[string]string{enabledKey: "true", configsKey: "web"}
+	ann := map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "web"}
 	svc := func(spec corev1.ServiceSpec) []corev1.Service {
 		return []corev1.Service{{ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "ns", Annotations: ann}, Spec: spec}}
 	}
@@ -269,7 +269,7 @@ func TestServiceTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := addrs(processServicesForConfig(svc(tt.spec), cfg, []string{"10.0.0.1", "10.0.0.2"}, newWarnTracker()))
+			got := legacyAddrs(processServicesForConfig(svc(tt.spec), cfg, []string{"10.0.0.1", "10.0.0.2"}, newWarnTracker()))
 			if !slices.Equal(got, tt.want) {
 				t.Fatalf("backends = %v, want %v", got, tt.want)
 			}
@@ -277,13 +277,13 @@ func TestServiceTypes(t *testing.T) {
 	}
 }
 
-func TestProcessServicesForConfigOrderIsDeterministic(t *testing.T) {
+func TestLegacyProcessServicesForConfigOrderIsDeterministic(t *testing.T) {
 	cfg := config.Configuration{Name: "web", BackendPortName: "http", Namespaces: []string{"*"}}
-	ann := map[string]string{enabledKey: "true", configsKey: "web"}
+	ann := map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "web"}
 	services := []corev1.Service{
-		*nodePortSvc("b", "z", ann, corev1.ServicePort{Name: "http", NodePort: 30002}),
-		*nodePortSvc("a", "y", ann, corev1.ServicePort{Name: "http", NodePort: 30003}),
-		*nodePortSvc("a", "x", ann, corev1.ServicePort{Name: "http", NodePort: 30009}),
+		*legacyNodePortSvc("b", "z", ann, corev1.ServicePort{Name: "http", NodePort: 30002}),
+		*legacyNodePortSvc("a", "y", ann, corev1.ServicePort{Name: "http", NodePort: 30003}),
+		*legacyNodePortSvc("a", "x", ann, corev1.ServicePort{Name: "http", NodePort: 30009}),
 	}
 	nodes := []string{"10.0.0.2", "10.0.0.1"}
 
@@ -292,7 +292,7 @@ func TestProcessServicesForConfigOrderIsDeterministic(t *testing.T) {
 	slices.Reverse(services)
 	for range 2 {
 		backends := processServicesForConfig(services, cfg, nodes, newWarnTracker())
-		if got := addrs(backends); !slices.Equal(got, want) {
+		if got := legacyAddrs(backends); !slices.Equal(got, want) {
 			t.Fatalf("order = %v, want %v", got, want)
 		}
 		for i, b := range backends {
@@ -304,7 +304,7 @@ func TestProcessServicesForConfigOrderIsDeterministic(t *testing.T) {
 	}
 }
 
-func TestWarnTracker(t *testing.T) {
+func TestLegacyWarnTracker(t *testing.T) {
 	w := newWarnTracker()
 	if !w.shouldWarn("binding/ns/svc", "") {
 		t.Fatal("first warning suppressed")
@@ -320,10 +320,10 @@ func TestWarnTracker(t *testing.T) {
 	}
 }
 
-func TestUnsupportedTypeWarnsOnce(t *testing.T) {
+func TestLegacyUnsupportedTypeWarnsOnce(t *testing.T) {
 	cfg := config.Configuration{Name: "web", BackendPortName: "http", Namespace: "ns"}
 	svc := corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: "ext", Namespace: "ns", Annotations: map[string]string{enabledKey: "true", configsKey: "web"}},
+		ObjectMeta: metav1.ObjectMeta{Name: "ext", Namespace: "ns", Annotations: map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "web"}},
 		Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeExternalName},
 	}
 	w := newWarnTracker()
@@ -333,72 +333,72 @@ func TestUnsupportedTypeWarnsOnce(t *testing.T) {
 	}
 }
 
-// fakeLB records SetBackendServers calls.
-type fakeLB struct {
+// legacyFakeLB records SetBackendServers calls.
+type legacyFakeLB struct {
 	mu      sync.Mutex
 	servers []*backend.BackendServer
 	sets    int
 }
 
-func (f *fakeLB) GetBackendServers() []*backend.BackendServer {
+func (f *legacyFakeLB) GetBackendServers() []*backend.BackendServer {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]*backend.BackendServer{}, f.servers...)
 }
 
-func (f *fakeLB) SetBackendServers(servers []*backend.BackendServer) {
+func (f *legacyFakeLB) SetBackendServers(servers []*backend.BackendServer) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.servers = servers
 	f.sets++
 }
 
-func (f *fakeLB) setCount() int {
+func (f *legacyFakeLB) setCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.sets
 }
 
-func lbFor(cfgs ...config.Configuration) map[string]LoadBalancerInterface {
+func legacyLbFor(cfgs ...config.Configuration) map[string]LoadBalancerInterface {
 	m := make(map[string]LoadBalancerInterface, len(cfgs))
 	for _, c := range cfgs {
-		m[c.Name] = &fakeLB{}
+		m[c.Name] = &legacyFakeLB{}
 	}
 	return m
 }
 
-func TestDiscoverOnceUpdatesBackends(t *testing.T) {
+func TestLegacyDiscoverOnceUpdatesBackends(t *testing.T) {
 	cfg := config.Configuration{Name: "https", BackendPortName: "https", Namespace: "ingress"}
-	client := fake.NewClientset(nodeObj("n1", "10.0.0.1"),
-		nodePortSvc("ingress", "ingress", map[string]string{enabledKey: "true", configsKey: "https"},
+	client := fake.NewClientset(legacyNodeObj("n1", "10.0.0.1"),
+		legacyNodePortSvc("ingress", "ingress", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "https"},
 			corev1.ServicePort{Name: "https", NodePort: 30742}))
-	lbs := lbFor(cfg)
+	lbs := legacyLbFor(cfg)
 
 	discoverOnce(context.Background(), client, []config.Configuration{cfg}, lbs, newWarnTracker())
 
 	servers := lbs["https"].GetBackendServers()
 	if len(servers) != 1 || servers[0].Address() != "10.0.0.1:30742" {
-		t.Fatalf("unexpected backends: %v", addrs(servers))
+		t.Fatalf("unexpected backends: %v", legacyAddrs(servers))
 	}
 }
 
-func TestDiscoverOnceAggregatesNamespacesInOneCall(t *testing.T) {
+func TestLegacyDiscoverOnceAggregatesNamespacesInOneCall(t *testing.T) {
 	cfg := config.Configuration{Name: "https", BackendPortName: "https", Namespaces: []string{"a", "b"}}
-	ann := map[string]string{enabledKey: "true", configsKey: "https"}
-	client := fake.NewClientset(nodeObj("n1", "10.0.0.1"),
-		nodePortSvc("a", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30001}),
-		nodePortSvc("b", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30002}),
-		nodePortSvc("c", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30003}),
+	ann := map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "https"}
+	client := fake.NewClientset(legacyNodeObj("n1", "10.0.0.1"),
+		legacyNodePortSvc("a", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30001}),
+		legacyNodePortSvc("b", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30002}),
+		legacyNodePortSvc("c", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30003}),
 	)
-	lbs := lbFor(cfg)
+	lbs := legacyLbFor(cfg)
 
 	discoverOnce(context.Background(), client, []config.Configuration{cfg}, lbs, newWarnTracker())
 
-	lb := lbs["https"].(*fakeLB)
+	lb := lbs["https"].(*legacyFakeLB)
 	if lb.setCount() != 1 {
 		t.Fatalf("SetBackendServers called %d times, want 1", lb.setCount())
 	}
-	if got, want := addrs(lb.GetBackendServers()), []string{"10.0.0.1:30001", "10.0.0.1:30002"}; !slices.Equal(got, want) {
+	if got, want := legacyAddrs(lb.GetBackendServers()), []string{"10.0.0.1:30001", "10.0.0.1:30002"}; !slices.Equal(got, want) {
 		t.Fatalf("backends = %v, want %v", got, want)
 	}
 
@@ -409,62 +409,62 @@ func TestDiscoverOnceAggregatesNamespacesInOneCall(t *testing.T) {
 	}
 }
 
-func TestDiscoverOnceClusterWideAndScopedUseOwnLists(t *testing.T) {
+func TestLegacyDiscoverOnceClusterWideAndScopedUseOwnLists(t *testing.T) {
 	wide := config.Configuration{Name: "wide", BackendPortName: "https", Namespaces: []string{"*"}}
 	scoped := config.Configuration{Name: "scoped", BackendPortName: "https", Namespace: "a"}
-	ann := map[string]string{enabledKey: "true", configsKey: "wide,scoped"}
-	client := fake.NewClientset(nodeObj("n1", "10.0.0.1"),
-		nodePortSvc("a", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30001}),
-		nodePortSvc("b", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30002}),
+	ann := map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "wide,scoped"}
+	client := fake.NewClientset(legacyNodeObj("n1", "10.0.0.1"),
+		legacyNodePortSvc("a", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30001}),
+		legacyNodePortSvc("b", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30002}),
 	)
-	lbs := lbFor(wide, scoped)
+	lbs := legacyLbFor(wide, scoped)
 
 	discoverOnce(context.Background(), client, []config.Configuration{wide, scoped}, lbs, newWarnTracker())
 
-	if got := addrs(lbs["wide"].GetBackendServers()); len(got) != 2 {
+	if got := legacyAddrs(lbs["wide"].GetBackendServers()); len(got) != 2 {
 		t.Fatalf("wide backends = %v", got)
 	}
-	if got := addrs(lbs["scoped"].GetBackendServers()); !slices.Equal(got, []string{"10.0.0.1:30001"}) {
+	if got := legacyAddrs(lbs["scoped"].GetBackendServers()); !slices.Equal(got, []string{"10.0.0.1:30001"}) {
 		t.Fatalf("scoped backends = %v", got)
 	}
 }
 
 // A failing cluster-wide list (no cluster-scope RBAC) must not freeze a
 // scoped configuration, and leaves the cluster-wide one untouched.
-func TestDiscoverOnceClusterWideListFailureDoesNotFreezeScoped(t *testing.T) {
+func TestLegacyDiscoverOnceClusterWideListFailureDoesNotFreezeScoped(t *testing.T) {
 	wide := config.Configuration{Name: "wide", BackendPortName: "https", Namespaces: []string{"*"}}
 	scoped := config.Configuration{Name: "scoped", BackendPortName: "https", Namespace: "a"}
-	ann := map[string]string{enabledKey: "true", configsKey: "wide,scoped"}
-	client := fake.NewClientset(nodeObj("n1", "10.0.0.1"),
-		nodePortSvc("a", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30001}))
+	ann := map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "wide,scoped"}
+	client := fake.NewClientset(legacyNodeObj("n1", "10.0.0.1"),
+		legacyNodePortSvc("a", "svc", ann, corev1.ServicePort{Name: "https", NodePort: 30001}))
 	client.PrependReactor("list", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if action.GetNamespace() == metav1.NamespaceAll {
 			return true, nil, errors.New("forbidden")
 		}
 		return false, nil, nil
 	})
-	lbs := lbFor(wide, scoped)
+	lbs := legacyLbFor(wide, scoped)
 
 	discoverOnce(context.Background(), client, []config.Configuration{wide, scoped}, lbs, newWarnTracker())
 
-	if got := addrs(lbs["scoped"].GetBackendServers()); !slices.Equal(got, []string{"10.0.0.1:30001"}) {
+	if got := legacyAddrs(lbs["scoped"].GetBackendServers()); !slices.Equal(got, []string{"10.0.0.1:30001"}) {
 		t.Fatalf("scoped backends = %v", got)
 	}
-	if n := lbs["wide"].(*fakeLB).setCount(); n != 0 {
+	if n := lbs["wide"].(*legacyFakeLB).setCount(); n != 0 {
 		t.Fatalf("wide config updated %d times despite failed list", n)
 	}
 }
 
-func TestWarnTrackerPrunesGoneServices(t *testing.T) {
+func TestLegacyWarnTrackerPrunesGoneServices(t *testing.T) {
 	cfg := config.Configuration{Name: "web", BackendPortName: "http", Namespace: "ns"}
 	ext := func(name string) *corev1.Service {
 		return &corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns", Annotations: map[string]string{enabledKey: "true", configsKey: "web"}},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "ns", Annotations: map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "web"}},
 			Spec:       corev1.ServiceSpec{Type: corev1.ServiceTypeExternalName},
 		}
 	}
-	client := fake.NewClientset(nodeObj("n1", "10.0.0.1"), ext("keep"), ext("gone"))
-	lbs := lbFor(cfg)
+	client := fake.NewClientset(legacyNodeObj("n1", "10.0.0.1"), ext("keep"), ext("gone"))
+	lbs := legacyLbFor(cfg)
 	w := newWarnTracker()
 	run := func() { discoverOnce(context.Background(), client, []config.Configuration{cfg}, lbs, w) }
 
@@ -496,15 +496,15 @@ func TestWarnTrackerPrunesGoneServices(t *testing.T) {
 	}
 }
 
-func TestWarnsWhenNamespaceNotInAllowlist(t *testing.T) {
+func TestLegacyWarnsWhenNamespaceNotInAllowlist(t *testing.T) {
 	a := config.Configuration{Name: "a", BackendPortName: "https", Namespace: "a"}
 	b := config.Configuration{Name: "b", BackendPortName: "https", Namespace: "b"}
 	// Listed for b, but names a, whose allowlist excludes namespace b.
-	client := fake.NewClientset(nodeObj("n1", "10.0.0.1"),
-		nodePortSvc("b", "svc", map[string]string{enabledKey: "true", configsKey: "a"}, corev1.ServicePort{Name: "https", NodePort: 30001}))
+	client := fake.NewClientset(legacyNodeObj("n1", "10.0.0.1"),
+		legacyNodePortSvc("b", "svc", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "a"}, corev1.ServicePort{Name: "https", NodePort: 30001}))
 	w := newWarnTracker()
 
-	discoverOnce(context.Background(), client, []config.Configuration{a, b}, lbFor(a, b), w)
+	discoverOnce(context.Background(), client, []config.Configuration{a, b}, legacyLbFor(a, b), w)
 
 	if w.shouldWarn("namespace/a/b/svc", "") {
 		t.Fatal("allowlist mismatch was not warned about")
@@ -513,12 +513,12 @@ func TestWarnsWhenNamespaceNotInAllowlist(t *testing.T) {
 
 // A failed list leaves the configurations that need it untouched, without
 // blocking the others.
-func TestDiscoverOnceFailedListLeavesOnlyAffectedConfig(t *testing.T) {
+func TestLegacyDiscoverOnceFailedListLeavesOnlyAffectedConfig(t *testing.T) {
 	multi := config.Configuration{Name: "multi", BackendPortName: "https", Namespaces: []string{"a", "b"}}
 	other := config.Configuration{Name: "other", BackendPortName: "https", Namespace: "c"}
-	client := fake.NewClientset(nodeObj("n1", "10.0.0.1"),
-		nodePortSvc("a", "svc", map[string]string{enabledKey: "true", configsKey: "multi"}, corev1.ServicePort{Name: "https", NodePort: 30001}),
-		nodePortSvc("c", "svc", map[string]string{enabledKey: "true", configsKey: "other"}, corev1.ServicePort{Name: "https", NodePort: 30003}),
+	client := fake.NewClientset(legacyNodeObj("n1", "10.0.0.1"),
+		legacyNodePortSvc("a", "svc", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "multi"}, corev1.ServicePort{Name: "https", NodePort: 30001}),
+		legacyNodePortSvc("c", "svc", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "other"}, corev1.ServicePort{Name: "https", NodePort: 30003}),
 	)
 	client.PrependReactor("list", "services", func(action k8stesting.Action) (bool, runtime.Object, error) {
 		if action.GetNamespace() == "b" {
@@ -528,34 +528,34 @@ func TestDiscoverOnceFailedListLeavesOnlyAffectedConfig(t *testing.T) {
 	})
 
 	known := backend.NewServer(1, "10.0.0.9", 30009, "https")
-	lbs := lbFor(multi, other)
-	lbs["multi"].(*fakeLB).servers = []*backend.BackendServer{known}
+	lbs := legacyLbFor(multi, other)
+	lbs["multi"].(*legacyFakeLB).servers = []*backend.BackendServer{known}
 
 	discoverOnce(context.Background(), client, []config.Configuration{multi, other}, lbs, newWarnTracker())
 
-	if lb := lbs["multi"].(*fakeLB); lb.setCount() != 0 || lb.GetBackendServers()[0] != known {
+	if lb := lbs["multi"].(*legacyFakeLB); lb.setCount() != 0 || lb.GetBackendServers()[0] != known {
 		t.Fatal("multi-namespace config was updated from a partial result")
 	}
-	if got := addrs(lbs["other"].GetBackendServers()); !slices.Equal(got, []string{"10.0.0.1:30003"}) {
+	if got := legacyAddrs(lbs["other"].GetBackendServers()); !slices.Equal(got, []string{"10.0.0.1:30003"}) {
 		t.Fatalf("other backends = %v", got)
 	}
 }
 
 // An API failure (the production case was an expired client certificate,
 // "Unauthorized") must keep the backends already known, never wipe them.
-func TestDiscoverOnceKeepsBackendsWhenTheAPIFails(t *testing.T) {
+func TestLegacyDiscoverOnceKeepsBackendsWhenTheAPIFails(t *testing.T) {
 	for _, resource := range []string{"nodes", "services"} {
 		t.Run(resource, func(t *testing.T) {
 			cfg := config.Configuration{Name: "https", BackendPortName: "https", Namespace: "ingress"}
-			client := fake.NewClientset(nodeObj("n1", "10.0.0.1"),
-				nodePortSvc("ingress", "ingress", map[string]string{enabledKey: "true", configsKey: "https"},
+			client := fake.NewClientset(legacyNodeObj("n1", "10.0.0.1"),
+				legacyNodePortSvc("ingress", "ingress", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "https"},
 					corev1.ServicePort{Name: "https", NodePort: 30742}))
 			client.PrependReactor("list", resource, func(k8stesting.Action) (bool, runtime.Object, error) {
 				return true, nil, errors.New("Unauthorized")
 			})
 
 			known := backend.NewServer(1, "10.0.0.9", 30742, "https")
-			lb := &fakeLB{servers: []*backend.BackendServer{known}}
+			lb := &legacyFakeLB{servers: []*backend.BackendServer{known}}
 
 			discoverOnce(context.Background(), client, []config.Configuration{cfg},
 				map[string]LoadBalancerInterface{"https": lb}, newWarnTracker())
@@ -570,12 +570,12 @@ func TestDiscoverOnceKeepsBackendsWhenTheAPIFails(t *testing.T) {
 	}
 }
 
-func TestRunDiscoveryStopsOnCancel(t *testing.T) {
+func TestLegacyRunDiscoveryStopsOnCancel(t *testing.T) {
 	cfg := config.Configuration{Name: "https", BackendPortName: "https", Namespace: "ingress"}
-	client := fake.NewClientset(nodeObj("n1", "10.0.0.1"),
-		nodePortSvc("ingress", "ingress", map[string]string{enabledKey: "true", configsKey: "https"},
+	client := fake.NewClientset(legacyNodeObj("n1", "10.0.0.1"),
+		legacyNodePortSvc("ingress", "ingress", map[string]string{legacyEnabledKey: "true", legacyConfigsKey: "https"},
 			corev1.ServicePort{Name: "https", NodePort: 30742}))
-	lbs := lbFor(cfg)
+	lbs := legacyLbFor(cfg)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -586,7 +586,7 @@ func TestRunDiscoveryStopsOnCancel(t *testing.T) {
 
 	// The first pass runs immediately, well before the first tick.
 	deadline := time.Now().Add(5 * time.Second)
-	for lbs["https"].(*fakeLB).setCount() == 0 {
+	for lbs["https"].(*legacyFakeLB).setCount() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("first pass never ran")
 		}
@@ -600,7 +600,7 @@ func TestRunDiscoveryStopsOnCancel(t *testing.T) {
 		t.Fatal("discovery did not exit on cancel")
 	}
 }
-func TestGetSharedClientError(t *testing.T) {
+func TestLegacyGetSharedClientError(t *testing.T) {
 	// Test error case when no shared client is available
 	// This will test the error path since we don't have a real K8s cluster
 	sharedK8sClient = nil

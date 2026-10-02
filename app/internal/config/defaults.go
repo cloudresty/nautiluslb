@@ -136,7 +136,7 @@ func (c *Configuration) applyDefaults() {
 	}
 
 	if c.Protocol == ProtocolUDP && c.UDP == nil {
-		c.UDP = &UDP{}
+		c.UDP = &UDP{MaxSessions: DefaultUDPMaxSessions}
 	}
 	if c.UDP != nil {
 		if c.UDP.SessionIdleTimeout == 0 {
@@ -166,6 +166,9 @@ func (c *Config) Deprecations() []string {
 		}
 		if d := cf.DialTimeout.Std(); d > MaxDialTimeout {
 			out = append(out, fmt.Sprintf("%s: dialTimeout %s exceeds the %s cap and will be capped", p, d, MaxDialTimeout))
+		}
+		if cf.Protocol == ProtocolUDP && cf.UDP != nil && cf.UDP.MaxSessions == 0 {
+			out = append(out, p+": udp.maxSessions: 0 means unlimited sessions; memory grows as sessions x (bufferSize + ~10KB), the default is 4096")
 		}
 	}
 	return out

@@ -27,9 +27,11 @@ type Key struct{ SourceIP netip.Addr }
 // pool calls it again with a Snapshot whose Healthy is the full set.
 //
 // Rebuild precomputes per-snapshot state (schedule, hash ring) and is called on
-// every snapshot change. It is safe to call concurrently with Pick; Pick also
-// rebuilds lazily if it is handed a snapshot Rebuild has not seen, so a missed
-// Rebuild costs latency, never correctness.
+// every snapshot change, before the new view is published. It is safe to call
+// concurrently with Pick. Pick never rebuilds for a snapshot Rebuild has not
+// seen (a stale reader would overwrite newer state); it uses the latest
+// Rebuild's state, which can be stale by microseconds. The only lazy build is a
+// Pick before any Rebuild. Stateless pickers read snap.Healthy directly.
 type Picker interface {
 	Pick(snap *backend.Snapshot, key Key, n int) []*backend.Backend
 	Rebuild(snap *backend.Snapshot)

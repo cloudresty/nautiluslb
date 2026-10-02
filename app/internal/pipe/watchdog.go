@@ -97,7 +97,7 @@ func (e *entry) check(now time.Time, halfCloseIdle, writeStall time.Duration) {
 		if !cur[i].pending() || cur[i].acked != e.prev[i].acked {
 			e.lastAck[i] = now
 		} else if now.Sub(e.lastAck[i]) >= writeStall {
-			e.abort(errWriteStall)
+			e.abort(ErrWriteStall)
 			return
 		}
 	}
@@ -112,18 +112,18 @@ func (e *entry) check(now time.Time, halfCloseIdle, writeStall time.Duration) {
 	switch done {
 	case doneIn: // only upstream to client remains
 		if now.Sub(e.lastDirMoved[1]) >= halfCloseIdle {
-			e.abort(errHalfCloseIdle)
+			e.abort(ErrHalfCloseIdle)
 			return
 		}
 	case doneOut:
 		if now.Sub(e.lastDirMoved[0]) >= halfCloseIdle {
-			e.abort(errHalfCloseIdle)
+			e.abort(ErrHalfCloseIdle)
 			return
 		}
 	}
 
 	if e.idle > 0 && now.Sub(e.lastActive) >= e.idle {
-		e.abort(errIdle)
+		e.abort(ErrIdleTimeout)
 		return
 	}
 

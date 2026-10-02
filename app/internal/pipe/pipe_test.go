@@ -420,7 +420,7 @@ func TestEntryCheckBounds(t *testing.T) {
 			t.Fatalf("aborted early: %v", *ab)
 		}
 		e.check(t0.Add(71*time.Second), bound, bound)
-		if !errors.Is(*ab, errWriteStall) {
+		if !errors.Is(*ab, ErrWriteStall) {
 			t.Fatalf("abort = %v", *ab)
 		}
 	})
@@ -451,7 +451,7 @@ func TestEntryCheckBounds(t *testing.T) {
 			t.Fatalf("aborted while moving: %v", *ab)
 		}
 		e.check(t0.Add(125*time.Second), bound, bound)
-		if !errors.Is(*ab, errHalfCloseIdle) {
+		if !errors.Is(*ab, ErrHalfCloseIdle) {
 			t.Fatalf("abort = %v", *ab)
 		}
 	})
@@ -466,7 +466,7 @@ func TestEntryCheckBounds(t *testing.T) {
 			t.Fatalf("aborted early: %v", *ab)
 		}
 		e.check(t0.Add(51*time.Second), bound, bound)
-		if !errors.Is(*ab, errIdle) {
+		if !errors.Is(*ab, ErrIdleTimeout) {
 			t.Fatalf("abort = %v", *ab)
 		}
 	})
@@ -481,37 +481,6 @@ func TestEntryCheckBounds(t *testing.T) {
 		}
 	})
 }
-
-func benchRun(b *testing.B, mode string) {
-	pool := &sync.Pool{New: func() any { buf := make([]byte, copyBufferSize); return &buf }}
-	payload := bytes.Repeat([]byte("p"), 64<<10)
-	b.SetBytes(int64(2 * len(payload)))
-	b.ReportAllocs()
-	for b.Loop() {
-		r := newRig(b)
-		opts := Options{BufferPool: pool}
-		if mode == ModeSplice {
-			w := NewWatchdog(0, 0)
-			w.Start(context.Background())
-			defer w.Stop()
-			opts.Watchdog = w
-		}
-		res := runAsync(r.client, r.upstream, opts)
-		go echoBackend(r.backendPeer)
-		go func() {
-			_, _ = r.clientPeer.Write(payload)
-			_ = r.clientPeer.CloseWrite()
-		}()
-		_, _ = io.Copy(io.Discard, r.clientPeer)
-		<-res
-		_ = r.clientPeer.Close()
-		_ = r.client.Close()
-		_ = r.upstream.Close()
-		_ = r.backendPeer.Close()
-	}
-}
-
-func BenchmarkRunGeneric(b *testing.B) { benchRun(b, ModeGeneric) }
 
 // TestRunCompletionVsAbortRace hammers Run completion against late aborts.
 func TestRunCompletionVsAbortRace(t *testing.T) {
@@ -556,4 +525,48 @@ func TestRunCompletionVsAbortRace(t *testing.T) {
 		}
 	})
 
+}
+
+// A complete exchange that ends with the backend already gone (FIN, then RST
+// for the client's last message) must stay a clean finish: CloseWrite on the
+// RST'd upstream returns ENOTCONN, which is not an abort.
+func TestCloseWriteAfterBackendRSTIsClean(t *testing.T) {
+	eachMode(t, func(t *testing.T, mode string) {
+		r := newRig(t)
+		done := runAsync(r.client, r.upstream, modeOpts(t, mode, 5*time.Second, 5*time.Second))
+
+		if _, err := r.clientPeer.Write([]byte("request")); err != nil {
+			t.Fatal(err)
+		}
+		buf := make([]byte, 16)
+		if n, err := io.ReadFull(r.backendPeer, buf[:7]); err != nil || n != 7 {
+			t.Fatalf("backend read: %d, %v", n, err)
+		}
+		if _, err := r.backendPeer.Write([]byte("response")); err != nil {
+			t.Fatal(err)
+		}
+		_ = r.backendPeer.Close() // FIN
+
+		if n, err := io.ReadFull(r.clientPeer, buf[:8]); err != nil || n != 8 {
+			t.Fatalf("client read: %d, %v", n, err)
+		}
+		if _, err := r.clientPeer.Read(buf); err != io.EOF {
+			t.Fatalf("client read after response = %v, want EOF", err)
+		}
+
+		// The final message reaches a closed socket: the backend answers RST.
+		if _, err := r.clientPeer.Write([]byte("bye")); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		_ = r.clientPeer.CloseWrite()
+
+		res := waitResult(t, done, 5*time.Second)
+		if res.Err != nil || res.EndedBy == EndedByAbort {
+			t.Fatalf("Err = %v, EndedBy = %q; want a clean finish", res.Err, res.EndedBy)
+		}
+		if res.BytesOut != 8 {
+			t.Errorf("BytesOut = %d, want 8", res.BytesOut)
+		}
+	})
 }

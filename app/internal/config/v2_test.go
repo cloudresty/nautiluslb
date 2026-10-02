@@ -451,3 +451,36 @@ func TestPools(t *testing.T) {
 		t.Errorf("udp pool: %+v", udp)
 	}
 }
+
+func TestUDPMaxSessionsDefault(t *testing.T) {
+	t.Run("no udp block", func(t *testing.T) {
+		c := udpConfiguration()
+		c.UDP = nil
+		cfg := &Config{Configurations: []Configuration{c}}
+		cfg.ApplyDefaults()
+		if got := cfg.Configurations[0].UDP.MaxSessions; got != DefaultUDPMaxSessions {
+			t.Fatalf("maxSessions = %d", got)
+		}
+	})
+	yml := func(udp string) *Config {
+		cfg, err := Parse("t", []byte("configurations:\n  - name: dns\n    protocol: udp\n    listenerAddress: \":53\"\n    udp: "+udp+"\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return cfg
+	}
+	if got := yml("{}").Configurations[0].UDP.MaxSessions; got != DefaultUDPMaxSessions {
+		t.Fatalf("absent key = %d", got)
+	}
+	cfg := yml("{maxSessions: 0}")
+	if got := cfg.Configurations[0].UDP.MaxSessions; got != 0 {
+		t.Fatalf("explicit 0 = %d", got)
+	}
+	found := false
+	for _, d := range cfg.Deprecations() {
+		found = found || strings.Contains(d, "udp.maxSessions")
+	}
+	if !found {
+		t.Fatal("no warning for explicit 0")
+	}
+}

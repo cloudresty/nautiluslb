@@ -374,8 +374,8 @@ func proxy(client, upstream net.Conn) {
 
 	var halfClosed atomic.Bool
 
-	toUpstream := &pipe{dst: upstream, src: client, direction: "client to backend", halfClosed: &halfClosed, abort: abort}
-	toClient := &pipe{dst: client, src: upstream, direction: "backend to client", halfClosed: &halfClosed, abort: abort}
+	toUpstream := &legacyPipe{dst: upstream, src: client, direction: "client to backend", halfClosed: &halfClosed, abort: abort}
+	toClient := &legacyPipe{dst: client, src: upstream, direction: "backend to client", halfClosed: &halfClosed, abort: abort}
 
 	done := make(chan struct{})
 	go func() {
@@ -388,14 +388,14 @@ func proxy(client, upstream net.Conn) {
 
 }
 
-type pipe struct {
+type legacyPipe struct {
 	dst, src   net.Conn
 	direction  string
 	halfClosed *atomic.Bool
 	abort      func()
 }
 
-func (p *pipe) run() {
+func (p *legacyPipe) run() {
 
 	defer func() {
 		if r := recover(); r != nil {

@@ -21,8 +21,12 @@ type Options struct {
 	EjectionHold time.Duration
 	Rise, Fall   int
 	Jitter       float64
-	Prober       Prober // nil: report-only (health type none)
-	Recorder     metrics.Recorder
+	Prober       Prober           // nil: report-only (health type none)
+	Recorder     metrics.Recorder // metrics only; correctness never rides on it
+	// OnTransition, if set, is called synchronously after every SetHealthy that
+	// changed a backend's state (probe up/down, passive recovery, Eject). It
+	// runs on the probe goroutine (or the Eject caller) and must not block.
+	OnTransition func(b *backend.Backend, healthy bool, cause backend.Cause)
 	Listener     string
 	Pool         string
 }
@@ -205,6 +209,39 @@ func (c *Checker) Stop() {
 
 }
 
+// transition is the single site that reports a health change that
+// SetHealthy accepted: metrics first, then the OnTransition contract.
+func transition(o *Options, b *backend.Backend, healthy bool, cause backend.Cause) {
+
+	name := "probe"
+	if cause == backend.CausePassive {
+		name = "passive"
+	}
+	o.Recorder.BackendHealth(o.Listener, o.Pool, b.Address(), healthy, name)
+
+	if o.OnTransition != nil {
+		o.OnTransition(b, healthy, cause)
+	}
+
+}
+
+// Eject passively marks b unhealthy for hold (after a failed dial). The hold is
+// set first so a probe cannot readmit it early. It reports whether the state
+// changed; on a change metrics are recorded and OnTransition is called.
+func (c *Checker) Eject(b *backend.Backend, hold time.Duration) bool {
+
+	b.SetEjectionHold(hold)
+
+	if !b.SetHealthy(false, backend.CausePassive) {
+		return false
+	}
+
+	transition(c.opts.Load(), b, false, backend.CausePassive)
+
+	return true
+
+}
+
 // Update replaces the options; loops pick them up at their next tick.
 func (c *Checker) Update(opts Options) {
 
@@ -266,7 +303,7 @@ func (c *Checker) recoverPassive(o *Options, b *backend.Backend, addr string) {
 	}
 
 	if b.SetHealthy(true, backend.CausePassive) {
-		o.Recorder.BackendHealth(o.Listener, o.Pool, addr, true, "passive")
+		transition(o, b, true, backend.CausePassive)
 		emit.Info.StructuredFields("Backend marked healthy",
 			emit.ZString("listener", o.Listener),
 			emit.ZString("pool", o.Pool),
@@ -301,7 +338,7 @@ func (c *Checker) tick(ctx context.Context, o *Options, b *backend.Backend, addr
 	switch {
 	case b.IsHealthy() && err != nil && *failRun >= o.Fall:
 		if b.SetHealthy(false, backend.CauseProbe) {
-			o.Recorder.BackendHealth(o.Listener, o.Pool, addr, false, "probe")
+			transition(o, b, false, backend.CauseProbe)
 			emit.Info.StructuredFields("Backend marked unhealthy",
 				emit.ZString("listener", o.Listener),
 				emit.ZString("pool", o.Pool),
@@ -311,7 +348,7 @@ func (c *Checker) tick(ctx context.Context, o *Options, b *backend.Backend, addr
 		*failRun, *okRun = 0, 0
 	case !b.IsHealthy() && err == nil && *okRun >= o.Rise && !c.now().Before(b.EjectedUntil()):
 		if b.SetHealthy(true, backend.CauseProbe) {
-			o.Recorder.BackendHealth(o.Listener, o.Pool, addr, true, "probe")
+			transition(o, b, true, backend.CauseProbe)
 			emit.Info.StructuredFields("Backend marked healthy",
 				emit.ZString("listener", o.Listener),
 				emit.ZString("pool", o.Pool),

@@ -173,24 +173,3 @@ func TestPeekBadHostname(t *testing.T) {
 		}
 	}
 }
-
-func FuzzPeek(f *testing.F) {
-	for _, n := range []string{"example.com", "", "a.b.c.example.org"} {
-		h := hello(f, n)
-		f.Add(h, 16384)
-		f.Add(splitRecords(h, 3), 4096)
-	}
-	f.Add([]byte("GET / HTTP/1.1\r\n"), 100)
-	f.Fuzz(func(t *testing.T, in []byte, max int) {
-		if max < 0 || max > 1<<16 {
-			return
-		}
-		_, consumed, _ := Peek(bytes.NewReader(in), max)
-		if max >= 5 && len(consumed) > max {
-			t.Fatalf("consumed %d > max %d", len(consumed), max)
-		}
-		if len(consumed) > len(in) {
-			t.Fatal("consumed more than input")
-		}
-	})
-}

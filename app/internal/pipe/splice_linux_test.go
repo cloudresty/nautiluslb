@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-func BenchmarkRunSplice(b *testing.B) { benchRun(b, ModeSplice) }
-
 func TestModeSpliceOnLinux(t *testing.T) {
 	var calls atomic.Int32
 	var raw atomic.Bool

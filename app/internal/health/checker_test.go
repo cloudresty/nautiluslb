@@ -504,3 +504,97 @@ func TestNoneProberReconcileNoTransitions(t *testing.T) {
 	}
 
 }
+
+type transitionLog struct {
+	mu sync.Mutex
+	ev []string
+}
+
+func (l *transitionLog) hook(_ *backend.Backend, healthy bool, cause backend.Cause) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := "down"
+	if healthy {
+		s = "up"
+	}
+	if cause == backend.CausePassive {
+		s += "/passive"
+	} else {
+		s += "/probe"
+	}
+	l.ev = append(l.ev, s)
+}
+
+func (l *transitionLog) events() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.ev...)
+}
+
+func TestOnTransitionProbeUpDown(t *testing.T) {
+	var fail atomic.Bool
+	p := funcProber(func(context.Context, string) error {
+		if fail.Load() {
+			return errors.New("down")
+		}
+		return nil
+	})
+	var log transitionLog
+	o := fastOpts(p, newFakeRec())
+	o.OnTransition = log.hook
+	c := NewChecker(o)
+	b := newBackend(1)
+	c.Start(context.Background())
+	c.Reconcile([]*backend.Backend{b})
+	defer c.Stop()
+
+	fail.Store(true)
+	eventually(t, "down", func() bool { return len(log.events()) == 1 })
+	fail.Store(false)
+	eventually(t, "up", func() bool { return len(log.events()) == 2 })
+	if got := log.events(); got[0] != "down/probe" || got[1] != "up/probe" {
+		t.Fatalf("events %v", got)
+	}
+}
+
+func TestOnTransitionPassiveRecovery(t *testing.T) {
+	var log transitionLog
+	o := fastOpts(nil, newFakeRec())
+	o.OnTransition = log.hook
+	c := NewChecker(o)
+	b := newBackend(1)
+	if !c.Eject(b, 20*time.Millisecond) {
+		t.Fatal("Eject reported no change")
+	}
+	c.Start(context.Background())
+	c.Reconcile([]*backend.Backend{b})
+	defer c.Stop()
+	eventually(t, "passive recovery", func() bool { return len(log.events()) == 2 })
+	if got := log.events(); got[0] != "down/passive" || got[1] != "up/passive" {
+		t.Fatalf("events %v", got)
+	}
+}
+
+func TestEjectIdempotentAndRecorded(t *testing.T) {
+	var log transitionLog
+	rec := newFakeRec()
+	o := fastOpts(nil, rec)
+	o.OnTransition = log.hook
+	c := NewChecker(o)
+	b := newBackend(1)
+	if !c.Eject(b, time.Minute) || b.IsHealthy() {
+		t.Fatal("first Eject must flip to unhealthy")
+	}
+	if c.Eject(b, time.Minute) {
+		t.Fatal("second Eject must report no change")
+	}
+	if !b.EjectedUntil().After(time.Now()) {
+		t.Fatal("hold not set")
+	}
+	if got := log.events(); len(got) != 1 || got[0] != "down/passive" {
+		t.Fatalf("events %v", got)
+	}
+	if h := rec.healthEvents(); len(h) != 1 || h[0] {
+		t.Fatalf("metrics %v", h)
+	}
+}

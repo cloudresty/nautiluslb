@@ -29,6 +29,23 @@ func (c *Configuration) UnmarshalYAML(unmarshal func(any) error) error {
 	return nil
 }
 
+// DefaultUDPMaxSessions is the per-listener UDP session cap applied when
+// udp.maxSessions is absent. Each session pins a read buffer, a goroutine and a
+// socket: memory is about maxSessions x (bufferSize + ~10KB).
+const DefaultUDPMaxSessions = 4096
+
+// UnmarshalYAML seeds the maxSessions default so that an explicit
+// maxSessions: 0 (unlimited) is distinguishable from an absent key.
+func (u *UDP) UnmarshalYAML(unmarshal func(any) error) error {
+	type plain UDP
+	p := plain{MaxSessions: DefaultUDPMaxSessions}
+	if err := unmarshal(&p); err != nil {
+		return err
+	}
+	*u = UDP(p)
+	return nil
+}
+
 // Parse strictly decodes a single-document YAML configuration. It does not
 // apply defaults, read the environment or validate; see Load.
 func Parse(name string, data []byte) (*Config, error) {

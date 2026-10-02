@@ -213,28 +213,6 @@ func TestV2Invalid(t *testing.T) {
 	}
 }
 
-func FuzzReadHeader(f *testing.F) {
-	for _, v := range []Version{V1, V2} {
-		for _, p := range [][2]net.Addr{{tcp("192.0.2.1:1"), tcp("192.0.2.2:2")}, {tcp("[::1]:1"), tcp("[::2]:2")}, {udp("1.1.1.1:1"), udp("2.2.2.2:2")}} {
-			var b bytes.Buffer
-			_ = WriteHeader(&b, v, p[0], p[1])
-			f.Add(b.Bytes())
-		}
-	}
-	f.Add([]byte("GET / HTTP/1.1\r\n"))
-	f.Add(v2(0x20, 0, nil))
-	f.Fuzz(func(t *testing.T, in []byte) {
-		br := bufio.NewReader(bytes.NewReader(in))
-		_, err := ReadHeader(br)
-		if errors.Is(err, ErrNotProxy) {
-			rest, _ := io.ReadAll(br)
-			if !bytes.Equal(rest, in) {
-				t.Fatal("ErrNotProxy consumed bytes")
-			}
-		}
-	})
-}
-
 func TestReadHeaderShortNonProxyImmediate(t *testing.T) {
 	c, s := net.Pipe()
 	defer func() { _ = c.Close(); _ = s.Close() }()

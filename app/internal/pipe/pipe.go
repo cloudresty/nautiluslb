@@ -20,6 +20,7 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/cloudresty/emit"
@@ -85,15 +86,22 @@ type Result struct {
 	Mode string
 	// EndedBy: "client" or "backend" is the side that finished first (EOF) or
 	// whose read/write failed on the generic path; "timeout" a bound fired;
-	// "abort" a panic, a failed half-close, or (splice path) a copy error whose
+	// "abort" a panic, or (splice path) a copy error whose
 	// side is not known.
 	EndedBy string
 }
 
+// Sentinels carried by Result.Err (test with errors.Is). The three bound
+// violations also wrap os.ErrDeadlineExceeded.
 var (
-	errHalfCloseIdle = fmt.Errorf("pipe: half-closed connection idle too long: %w", os.ErrDeadlineExceeded)
-	errWriteStall    = fmt.Errorf("pipe: peer stopped reading: %w", os.ErrDeadlineExceeded)
-	errIdle          = fmt.Errorf("pipe: connection idle too long: %w", os.ErrDeadlineExceeded)
+	// ErrHalfCloseIdle: one side finished sending and the other went idle.
+	ErrHalfCloseIdle = fmt.Errorf("pipe: half-closed connection idle too long: %w", os.ErrDeadlineExceeded)
+	// ErrWriteStall: a peer stopped reading while data was waiting for it.
+	ErrWriteStall = fmt.Errorf("pipe: peer stopped reading: %w", os.ErrDeadlineExceeded)
+	// ErrIdleTimeout: no byte moved in either direction for IdleTimeout.
+	ErrIdleTimeout = fmt.Errorf("pipe: connection idle too long: %w", os.ErrDeadlineExceeded)
+	// ErrPanic: a copy goroutine panicked and was recovered.
+	ErrPanic = errors.New("pipe: panic")
 )
 
 // sideErr tags a generic-path copy error with the side it came from.
@@ -124,6 +132,8 @@ type session struct {
 	err       error
 
 	halfClosed atomic.Bool
+	cleanIn    atomic.Bool  // client to backend finished with a clean EOF
+	cleanOut   atomic.Bool  // backend to client finished with a clean EOF
 	lastActive atomic.Int64 // unix nanos, generic path IdleTimeout only
 }
 
@@ -250,7 +260,7 @@ func (s *session) direction(dst, src net.Conn, in bool, copyFn func(dst, src net
 				emit.ZString("direction", name),
 				emit.ZString("panic", fmt.Sprint(r)),
 				emit.ZString("stack", string(debug.Stack())))
-			s.abort(EndedByAbort, fmt.Errorf("pipe: panic copying %s: %v", name, r))
+			s.abort(EndedByAbort, fmt.Errorf("%w copying %s: %v", ErrPanic, name, r))
 		}
 	}()
 
@@ -271,11 +281,22 @@ func (s *session) direction(dst, src net.Conn, in bool, copyFn func(dst, src net
 	// Clean EOF: pass the half-close on, then bound the other direction.
 	s.eofOnce.Do(func() { s.eofBy = finishedBy })
 	s.halfClosed.Store(true)
+	mine, other := &s.cleanOut, &s.cleanIn
+	if in {
+		mine, other = &s.cleanIn, &s.cleanOut
+	}
+	mine.Store(true)
 	if s.entry != nil {
 		s.entry.finished(in)
 	}
 	if err := closeWrite(dst); err != nil {
-		s.abort(EndedByAbort, err)
+		// The peer is already gone (RST) or the other direction has already
+		// delivered everything: nothing was lost, and an RST'd socket's other
+		// direction errors out on its own, so this is not an abort.
+		if benignCloseWrite(err) || other.Load() {
+			return
+		}
+		s.abort(dstSide, &sideErr{side: dstSide, err: err})
 		return
 	}
 	if s.generic {
@@ -295,7 +316,7 @@ func (s *session) write(dst net.Conn, b []byte) (int, error) {
 
 // classify maps a copy error to Result.EndedBy.
 func classify(err error, fallback string) string {
-	if errors.Is(err, errHalfCloseIdle) || errors.Is(err, errWriteStall) || errors.Is(err, errIdle) || errors.Is(err, os.ErrDeadlineExceeded) {
+	if errors.Is(err, ErrHalfCloseIdle) || errors.Is(err, ErrWriteStall) || errors.Is(err, ErrIdleTimeout) || errors.Is(err, os.ErrDeadlineExceeded) {
 		return EndedByTimeout
 	}
 	var se *sideErr
@@ -303,6 +324,13 @@ func classify(err error, fallback string) string {
 		return se.side
 	}
 	return fallback
+}
+
+// benignCloseWrite reports whether a CloseWrite error only means the peer
+// already tore the connection down (ENOTCONN after an RST, for one).
+func benignCloseWrite(err error) bool {
+	return errors.Is(err, syscall.ENOTCONN) || errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, net.ErrClosed)
 }
 
 func closeWrite(conn net.Conn) error {
@@ -379,9 +407,9 @@ func (r *idleReader) Read(b []byte) (int, error) {
 		last := time.Unix(0, r.s.lastActive.Load())
 		switch {
 		case r.s.halfClosed.Load():
-			return n, wrapTimeout(err, errHalfCloseIdle)
+			return n, wrapTimeout(err, ErrHalfCloseIdle)
 		case r.s.idle > 0 && time.Since(last) >= r.s.idle:
-			return n, wrapTimeout(err, errIdle)
+			return n, wrapTimeout(err, ErrIdleTimeout)
 		case r.s.idle > 0 && n == 0:
 			continue
 		}
@@ -408,7 +436,7 @@ func (w *stallWriter) Write(b []byte) (int, error) {
 		w.s.lastActive.Store(time.Now().UnixNano())
 	}
 	if err != nil && errors.Is(err, os.ErrDeadlineExceeded) {
-		return n, wrapTimeout(err, errWriteStall)
+		return n, wrapTimeout(err, ErrWriteStall)
 	}
 	return n, wrapSide(err, w.side)
 
