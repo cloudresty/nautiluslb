@@ -251,10 +251,10 @@ func (r *Runtime) Start(ctx context.Context) error {
 
 	r.poolsMu.RLock()
 	for _, p := range r.pools {
-		p.Start(r.runCtx)
+		p.Start(r.runCtx) //nolint:contextcheck // runCtx is the runtime-lifetime ctx, deliberately distinct from the bounded start ctx
 	}
 	r.poolsMu.RUnlock()
-	r.wd.Start(r.runCtx)
+	r.wd.Start(r.runCtx) //nolint:contextcheck // runCtx is the runtime-lifetime ctx, deliberately distinct from the bounded start ctx
 	specs := r.allSpecs(r.opts.Config.Configurations)
 	r.mu.Unlock()
 
@@ -286,7 +286,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return errors.New("runtime: shut down during start")
 	}
 	for _, e := range r.entries {
-		r.serveLocked(e)
+		r.serveLocked(e) //nolint:contextcheck // connection handlers run under runCtx (runtime lifetime), not the start ctx
 	}
 	r.state = stateRunning
 	r.mu.Unlock()

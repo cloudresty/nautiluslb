@@ -2,6 +2,7 @@ package tcpproxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -456,7 +458,7 @@ func TestSNIWithInboundProxyReplaysLeftovers(t *testing.T) {
 	select {
 	case b := <-got:
 		want := append(append([]byte(nil), hello...), []byte("TRAILING-APP-DATA")...)
-		if string(b) != string(want) {
+		if !bytes.Equal(b, want) {
 			t.Fatalf("backend saw %d bytes, want %d (hello + trailing data)", len(b), len(want))
 		}
 	case <-time.After(5 * time.Second):
@@ -686,17 +688,17 @@ func TestUpdateAddressChangedRejected(t *testing.T) {
 
 	cfg := tpConfig()
 	cfg.ListenerAddress = "127.0.0.1:9"
-	if err := h.l.Update(cfg, nil); err != ErrAddressChanged {
+	if err := h.l.Update(cfg, nil); !errors.Is(err, ErrAddressChanged) {
 		t.Errorf("address change: err = %v, want ErrAddressChanged", err)
 	}
 	cfg = tpConfig()
 	cfg.Protocol = config.ProtocolTLS
-	if err := h.l.Update(cfg, nil); err != ErrAddressChanged {
+	if err := h.l.Update(cfg, nil); !errors.Is(err, ErrAddressChanged) {
 		t.Errorf("protocol change: err = %v, want ErrAddressChanged", err)
 	}
 	cfg = tpConfig()
 	cfg.Access.Deny = []string{"not-a-cidr"}
-	if err := h.l.Update(cfg, nil); err == nil || err == ErrAddressChanged {
+	if err := h.l.Update(cfg, nil); err == nil || errors.Is(err, ErrAddressChanged) {
 		t.Errorf("invalid ACL: err = %v, want a parse error", err)
 	}
 }

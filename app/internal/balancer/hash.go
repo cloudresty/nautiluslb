@@ -62,7 +62,7 @@ func mix(x uint64) uint64 { // murmur3 fmix64: FNV-1a alone clusters on near-ide
 
 func fnv64(b []byte) uint64 {
 	h := fnv.New64a()
-	h.Write(b)
+	_, _ = h.Write(b) // hash.Hash.Write never returns an error
 	return mix(h.Sum64())
 }
 

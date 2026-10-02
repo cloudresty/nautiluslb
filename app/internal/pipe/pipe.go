@@ -443,7 +443,7 @@ func (w *stallWriter) Write(b []byte) (int, error) {
 }
 
 func wrapSide(err error, side string) error {
-	if err == nil || err == io.EOF {
+	if err == nil || err == io.EOF { //nolint:errorlint // exact sentinel match on purpose: only a bare io.EOF is a clean end; wrapped errors must be attributed to a side
 		return err
 	}
 	return &sideErr{side: side, err: err}

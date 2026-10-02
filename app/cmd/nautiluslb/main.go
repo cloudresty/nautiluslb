@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cloudresty/emit"
+
 	"github.com/cloudresty/nautiluslb/internal/accesslog"
 	"github.com/cloudresty/nautiluslb/internal/admin"
 	"github.com/cloudresty/nautiluslb/internal/config"
@@ -27,6 +28,9 @@ const (
 	shutdownMargin = 2 * time.Second
 	closeTimeout   = 2 * time.Second
 )
+
+// newKubeClient is kube.NewClient; tests substitute a fake clientset.
+var newKubeClient = kube.NewClient
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout))
@@ -46,7 +50,7 @@ func run(args []string, getenv func(string) string, stdout io.Writer) int {
 	}
 	configPath := fs.String("config", defaultConfig, "Path to the configuration file (env NLB_CONFIG sets the default)")
 	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
+		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
@@ -157,7 +161,7 @@ func serve(configPath string, cfg *config.Config, pprofOn bool) int {
 		return 1
 	}
 
-	client, kubeContext, err := kube.NewClient(cfg.Settings.Kubernetes, "nautiluslb/"+version.Version)
+	client, kubeContext, err := newKubeClient(cfg.Settings.Kubernetes, "nautiluslb/"+version.Version)
 	if err != nil {
 		emit.Error.StructuredFields("Failed to initialize Kubernetes client",
 			emit.ZString("kubeconfig_path", cfg.Settings.Kubernetes.Kubeconfig),
@@ -184,20 +188,24 @@ func serve(configPath string, cfg *config.Config, pprofOn bool) int {
 		return 1
 	}
 
-	closeAll := func() {
-		cctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
-		if err := closeLog(cctx); err != nil {
-			emit.Warn.StructuredFields("Closing access log", emit.ZString("error", err.Error()))
-		}
-		cancel()
-		actx, cancel := context.WithTimeout(context.Background(), closeTimeout)
-		if err := adm.Shutdown(actx); err != nil {
-			emit.Warn.StructuredFields("Closing admin server", emit.ZString("error", err.Error()))
-		}
-		cancel()
-	}
+	closeAll := func() { closeResources(closeLog, adm.Shutdown) }
 
 	return lifecycle(rt, rec, cfg, configPath, sigs, closeAll)
+}
+
+// closeResources closes the access log first (so the last records are
+// flushed), then shuts the admin server down, each bounded by closeTimeout.
+func closeResources(closeLog, shutdownAdmin func(context.Context) error) {
+	cctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	if err := closeLog(cctx); err != nil {
+		emit.Warn.StructuredFields("Closing access log", emit.ZString("error", err.Error()))
+	}
+	cancel()
+	actx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+	if err := shutdownAdmin(actx); err != nil {
+		emit.Warn.StructuredFields("Closing admin server", emit.ZString("error", err.Error()))
+	}
+	cancel()
 }
 
 // lifecycleRuntime is the part of the runtime the supervisor drives.

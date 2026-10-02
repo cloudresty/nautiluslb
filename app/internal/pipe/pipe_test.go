@@ -211,7 +211,7 @@ func TestHalfCloseIdleBound(t *testing.T) {
 		}
 		// The half-close must have been forwarded before the bound fired.
 		_ = r.backendPeer.SetReadDeadline(time.Now().Add(time.Second))
-		if _, err := r.backendPeer.Read(make([]byte, 1)); err != io.EOF {
+		if _, err := r.backendPeer.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 			t.Fatalf("backend saw %v, want EOF", err)
 		}
 	})
@@ -550,7 +550,7 @@ func TestCloseWriteAfterBackendRSTIsClean(t *testing.T) {
 		if n, err := io.ReadFull(r.clientPeer, buf[:8]); err != nil || n != 8 {
 			t.Fatalf("client read: %d, %v", n, err)
 		}
-		if _, err := r.clientPeer.Read(buf); err != io.EOF {
+		if _, err := r.clientPeer.Read(buf); !errors.Is(err, io.EOF) {
 			t.Fatalf("client read after response = %v, want EOF", err)
 		}
 

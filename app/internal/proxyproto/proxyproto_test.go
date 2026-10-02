@@ -228,7 +228,7 @@ func TestReadHeaderShortNonProxyImmediate(t *testing.T) {
 		t.Fatal("ReadHeader waited for more bytes")
 	}
 	got, _ := br.Peek(br.Buffered())
-	if !strings.HasPrefix("hi", string(got)) || len(got) == 0 {
+	if !strings.HasPrefix(string(got), "hi") || len(got) == 0 {
 		t.Fatalf("buffered %q", got)
 	}
 }

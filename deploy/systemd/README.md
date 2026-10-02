@@ -16,8 +16,9 @@ use the Helm chart (`deploy/helm/nautiluslb`) or the raw manifests
 
 ### 1. Binary
 
-Release assets are `nautiluslb-linux-amd64`, `nautiluslb-linux-arm64` and
-`sha256sums.txt`, each signed with cosign (keyless).
+Release assets are `nautiluslb-linux-amd64`, `nautiluslb-linux-arm64`,
+`sha256sums.txt` and a cosign bundle (`*.sigstore.json`) for each of them,
+signed keyless by the release workflow. Verification needs cosign v3.
 
 ```bash
 VERSION=v2.0.0
@@ -26,16 +27,12 @@ BASE=https://github.com/cloudresty/nautiluslb/releases/download/${VERSION}
 
 curl -fsSLO "${BASE}/nautiluslb-linux-${ARCH}"
 curl -fsSLO "${BASE}/sha256sums.txt"
-curl -fsSLO "${BASE}/sha256sums.txt.sig"
-curl -fsSLO "${BASE}/sha256sums.txt.pem"
+curl -fsSLO "${BASE}/sha256sums.txt.sigstore.json"
 
 # Verify the signature on the checksum list, then the binary against it.
-# The exact identity and asset names are confirmed on the release page.
-cosign verify-blob \
-  --certificate sha256sums.txt.pem \
-  --signature sha256sums.txt.sig \
-  --certificate-identity-regexp '^https://github.com/cloudresty/nautiluslb/' \
+cosign verify-blob --bundle sha256sums.txt.sigstore.json \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity "https://github.com/cloudresty/nautiluslb/.github/workflows/release.yaml@refs/tags/${VERSION}" \
   sha256sums.txt
 sha256sum --check --ignore-missing sha256sums.txt
 
@@ -179,10 +176,11 @@ because `SystemCallErrorNumber=EPERM` makes a blocked call fail with `EPERM`:
   the generic copy (`nautiluslb_pipe_mode_total{mode="generic"}`); nothing breaks.
 - `pipe2` blocked: Go cannot create its splice pipe and silently falls back to
   `read`/`write`; nothing breaks.
-- `splice` blocked: Go falls back to `read`/`write` only on `EINVAL`. On
-  `EPERM` it reports the error, so every spliced TCP/TLS connection closes
-  immediately after setup, with no payload forwarded
-  (`splice: operation not permitted`).
+- `splice` blocked: Go itself falls back to `read`/`write` only on `EINVAL`,
+  so NautilusLB probes `splice` once at the first eligible connection. When
+  the probe gets `EPERM` it logs `splice(2) unavailable, using the generic copy
+  path for all connections` and every connection uses the generic copy
+  (`nautiluslb_pipe_mode_total{mode="generic"}`); nothing breaks.
 
 If a future feature is blocked by one of these directives, relax that one
 directive in a drop-in. Do not remove the whole block.

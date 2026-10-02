@@ -83,7 +83,7 @@ func (b *Backend) SetHealthy(healthy bool, cause Cause) (changed bool) {
 }
 
 // LastCause returns the cause of the most recent health transition.
-func (b *Backend) LastCause() Cause { return Cause(b.cause.Load()) }
+func (b *Backend) LastCause() Cause { return Cause(b.cause.Load()) } //nolint:gosec // G115: cause only ever stores a Cause value (uint8)
 
 // State returns Healthy or Unhealthy.
 func (b *Backend) State() State {

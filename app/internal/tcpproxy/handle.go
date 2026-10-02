@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/cloudresty/emit"
+
 	"github.com/cloudresty/nautiluslb/internal/accesslog"
 	"github.com/cloudresty/nautiluslb/internal/backend"
 	"github.com/cloudresty/nautiluslb/internal/balancer"

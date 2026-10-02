@@ -99,13 +99,29 @@ The manifests are [`deploy/kubernetes/rbac-cluster.yaml`](../deploy/kubernetes/r
 
 ## Signed releases
 
-Release artifacts are signed with Sigstore cosign keyless signing from the GitHub Actions release workflow of `cloudresty/nautiluslb`. The artifacts are the binaries (`sha256sums.txt`), the container image and the Helm chart (OCI). Verify the image before deploying:
+Release artifacts are signed with Sigstore cosign keyless signing by the `release.yaml` workflow of `cloudresty/nautiluslb`. The signed artifacts are the binaries (through `sha256sums.txt`), the container image on Docker Hub and the Helm chart on GHCR. Verify them before deploying:
 
 ```bash
-cosign verify cloudresty/nautiluslb:v2.0.0 \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github.com/cloudresty/nautiluslb/\.github/workflows/'
+VERSION=v2.0.0
+ISSUER=https://token.actions.githubusercontent.com
+IDENTITY="https://github.com/cloudresty/nautiluslb/.github/workflows/release.yaml@refs/tags/${VERSION}"
+
+# Container image (Docker Hub)
+cosign verify "cloudresty/nautiluslb:${VERSION}" \
+  --certificate-oidc-issuer "$ISSUER" --certificate-identity "$IDENTITY"
+
+# Helm chart (GHCR; chart versions have no leading "v")
+cosign verify "ghcr.io/cloudresty/charts/nautiluslb:${VERSION#v}" \
+  --certificate-oidc-issuer "$ISSUER" --certificate-identity "$IDENTITY"
+
+# Binaries: verify the signed checksum list, then the binaries against it
+cosign verify-blob --bundle sha256sums.txt.sigstore.json \
+  --certificate-oidc-issuer "$ISSUER" --certificate-identity "$IDENTITY" \
+  sha256sums.txt
+sha256sum --check --ignore-missing sha256sums.txt
 ```
+
+Verification needs cosign v3. The identity pins the release workflow and the tag, so a signature made by any other workflow or ref is rejected. Each GitHub release also carries an SPDX SBOM per binary and a `.sigstore.json` bundle for every signed file; the container image has SBOM and provenance attestations attached.
 
 Pin the image by digest (`cloudresty/nautiluslb@sha256:...`) in production.
 

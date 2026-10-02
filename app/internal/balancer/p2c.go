@@ -25,7 +25,7 @@ func (p *randomTwoChoices) Pick(snap *backend.Snapshot, _ Key, n int) []*backend
 		return scored{b, b.ActiveConnections(), int64(EffectiveWeight(b, p.opts.SlowStart, now))}
 	}
 	for try := 0; len(out) < n && try < 8*n; try++ {
-		a, b := h[rand.IntN(len(h))], h[rand.IntN(len(h))]
+		a, b := h[rand.IntN(len(h))], h[rand.IntN(len(h))] //nolint:gosec // G404: load-balancing choice, not a security boundary
 		switch {
 		case ok(a) && ok(b) && a != b:
 			if sc(b).less(sc(a)) {
@@ -40,7 +40,7 @@ func (p *randomTwoChoices) Pick(snap *backend.Snapshot, _ Key, n int) []*backend
 	}
 	// Guarantee: fill from a random start so a lone eligible backend is found.
 	if len(out) < n {
-		s := rand.IntN(len(h))
+		s := rand.IntN(len(h)) //nolint:gosec // G404: load-balancing choice, not a security boundary
 		for i := 0; i < len(h) && len(out) < n; i++ {
 			if b := h[(s+i)%len(h)]; ok(b) {
 				out = append(out, b)

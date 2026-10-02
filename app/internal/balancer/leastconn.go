@@ -36,7 +36,7 @@ func (l *leastConn) Pick(snap *backend.Snapshot, _ Key, n int) []*backend.Backen
 	if n > len(arr) {
 		top = make([]scored, 0, n)
 	}
-	start := int(l.rot.Add(1) % uint64(len(h)))
+	start := int(l.rot.Add(1) % uint64(len(h))) //nolint:gosec // G115: the remainder is < len(h), so it fits an int
 	for i := range h {
 		b := h[(start+i)%len(h)]
 		if full(b) {

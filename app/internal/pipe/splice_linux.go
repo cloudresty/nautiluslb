@@ -3,9 +3,84 @@
 package pipe
 
 import (
+	"errors"
 	"io"
 	"net"
+	"sync"
+	"sync/atomic"
+	"syscall"
+
+	"github.com/cloudresty/emit"
 )
+
+// Go's TCPConn.ReadFrom falls back to a userspace copy only when splice fails
+// with EINVAL, or when the pipe cannot be created (pipe2 failure surfaces as
+// EINVAL from getPipe). Any other splice errno (EPERM from a seccomp filter,
+// ENOSYS, EACCES) is "handled" and fails the connection with no data
+// forwarded, so the process probes splice(2) once and disables the splice path
+// if it is unusable.
+var (
+	spliceProbe = probeSplice // replaced in tests
+	spliceOnce  sync.Once
+	spliceOK    atomic.Bool
+)
+
+// spliceUsable runs the probe once per process and reports its verdict.
+func spliceUsable() bool {
+	spliceOnce.Do(func() {
+		if err := spliceProbe(); err != nil {
+			emit.Warn.StructuredFields("splice(2) unavailable, using the generic copy path for all connections",
+				emit.ZString("error", err.Error()),
+				emit.ZString("hint", "a seccomp/SystemCallFilter policy may block splice or pipe2"))
+			return
+		}
+		spliceOK.Store(true)
+	})
+	return spliceOK.Load()
+}
+
+// probeSplice moves one byte from a loopback socket into a pipe with
+// splice(2). EINVAL is acceptable: Go falls back to a userspace copy itself.
+func probeSplice() error {
+	var fds [2]int
+	if err := syscall.Pipe2(fds[:], syscall.O_CLOEXEC|syscall.O_NONBLOCK); err != nil {
+		return err
+	}
+	defer func() { _ = syscall.Close(fds[0]); _ = syscall.Close(fds[1]) }()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = l.Close() }()
+	a, err := net.Dial("tcp", l.Addr().String())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = a.Close() }()
+	b, err := l.Accept()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = b.Close() }()
+	if _, err = a.Write([]byte{0}); err != nil {
+		return err
+	}
+	rc, err := b.(*net.TCPConn).SyscallConn()
+	if err != nil {
+		return err
+	}
+	var serr error
+	if err = rc.Read(func(fd uintptr) bool {
+		_, serr = syscall.Splice(int(fd), nil, fds[1], nil, 1, 0x2) // SPLICE_F_NONBLOCK
+		return serr != syscall.EAGAIN
+	}); err != nil {
+		return err
+	}
+	if errors.Is(serr, syscall.EINVAL) {
+		return nil
+	}
+	return serr
+}
 
 // spliceTestHook, when set, is told what the splice path hands to ReadFrom.
 // It exists so tests can assert the raw *net.TCPConn reaches ReadFrom with no
@@ -17,6 +92,9 @@ var spliceTestHook func(dst *net.TCPConn, src io.Reader)
 func newEntry(client, upstream net.Conn, w *Watchdog) (*entry, bool) {
 
 	if !w.active() {
+		return nil, false
+	}
+	if !spliceUsable() {
 		return nil, false
 	}
 	c, ok := client.(*net.TCPConn)

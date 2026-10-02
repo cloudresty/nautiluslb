@@ -1,6 +1,7 @@
 package limits
 
 import (
+	"math"
 	"net/netip"
 	"sync"
 	"sync/atomic"
@@ -24,7 +25,7 @@ type PerSource struct {
 // NewPerSource returns a PerSource with the given per-IP capacity (0 = unlimited).
 func NewPerSource(capacity int) *PerSource {
 	p := &PerSource{}
-	p.capacity.Store(int32(capacity))
+	p.capacity.Store(clampInt32(capacity))
 	for i := range p.shards {
 		p.shards[i].m = make(map[netip.Addr]int32)
 	}
@@ -33,7 +34,12 @@ func NewPerSource(capacity int) *PerSource {
 
 // SetCapacity changes the per-IP capacity (0 = unlimited). Existing holders
 // are unaffected.
-func (p *PerSource) SetCapacity(n int) { p.capacity.Store(int32(n)) }
+func (p *PerSource) SetCapacity(n int) { p.capacity.Store(clampInt32(n)) }
+
+// clampInt32 narrows n to int32, saturating instead of wrapping.
+func clampInt32(n int) int32 {
+	return int32(min(max(n, math.MinInt32), math.MaxInt32)) //nolint:gosec // G115: clamped to the int32 range on the line above
+}
 
 func norm(ip netip.Addr) netip.Addr { return ip.Unmap().WithZone("") }
 

@@ -244,7 +244,7 @@ func (m *Manager) Start(ctx context.Context, specs []config.PoolSpec) error {
 	m.ctx, m.cancel = context.WithCancel(context.Background())
 	m.specs = slices.Clone(specs)
 	for _, ns := range namespacesOf(specs) {
-		f, err := m.newNSFactory(ns)
+		f, err := m.newNSFactory(ns) //nolint:contextcheck // factories derive from m.ctx (set just above), not the caller ctx; Start ctx only bounds the initial sync
 		if err != nil {
 			m.mu.Unlock()
 			m.Stop()
@@ -252,7 +252,7 @@ func (m *Manager) Start(ctx context.Context, specs []config.PoolSpec) error {
 		}
 		m.facs[ns] = f
 	}
-	n, err := m.newNodeFactory()
+	n, err := m.newNodeFactory() //nolint:contextcheck // factories derive from m.ctx (set just above), not the caller ctx; Start ctx only bounds the initial sync
 	if err != nil {
 		m.mu.Unlock()
 		m.Stop()

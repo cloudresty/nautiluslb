@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 
 	"github.com/cloudresty/emit"
+
 	"github.com/cloudresty/nautiluslb/internal/backend"
 	"github.com/cloudresty/nautiluslb/internal/balancer"
 	"github.com/cloudresty/nautiluslb/internal/config"
@@ -95,7 +96,7 @@ func (p *Pool) checkerOptions(spec config.PoolSpec) health.Options {
 		prober = health.NewHTTPProber(h.HTTP.Path, h.HTTP.Host, h.HTTP.ExpectStatus)
 	}
 	if prober != nil && h.Port > 0 {
-		prober = portProber{inner: prober, port: uint16(h.Port)}
+		prober = portProber{inner: prober, port: uint16(h.Port)} //nolint:gosec // G115: config validation bounds health.port to 1..65535
 	}
 	return health.Options{
 		Interval:     h.Interval.Std(),

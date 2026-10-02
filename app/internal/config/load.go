@@ -117,7 +117,7 @@ func scanBareDurations(n *yaml.Node, path string, out *[]string) {
 // Load reads the configuration file, applies defaults and NLB_* environment
 // overrides, validates it and logs its deprecations.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is the operator-supplied --config/NLB_CONFIG file
 	if err != nil {
 		return nil, err
 	}

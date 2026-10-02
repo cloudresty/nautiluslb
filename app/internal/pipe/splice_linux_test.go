@@ -6,7 +6,9 @@ import (
 	"context"
 	"io"
 	"net"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -85,5 +87,57 @@ func TestWatchdogAbortInterruptsBlockedSplice(t *testing.T) {
 	out := waitResult(t, res, 5*time.Second)
 	if out.EndedBy != EndedByTimeout || out.Mode != ModeSplice {
 		t.Fatalf("result %+v", out)
+	}
+}
+
+// resetProbe installs fn as the splice probe and re-arms the once.
+func resetProbe(t *testing.T, fn func() error) {
+	t.Helper()
+	prev := spliceProbe
+	spliceProbe = fn
+	spliceOnce = sync.Once{}
+	spliceOK.Store(false)
+	t.Cleanup(func() {
+		spliceProbe = prev
+		spliceOnce = sync.Once{}
+		spliceOK.Store(false)
+	})
+}
+
+func runEcho(t *testing.T) Result {
+	r := newRig(t)
+	res := runAsync(r.client, r.upstream, modeOpts(t, ModeSplice, 5*time.Second, 5*time.Second))
+	go echoBackend(r.backendPeer)
+	_, _ = r.clientPeer.Write([]byte("ping"))
+	_ = r.clientPeer.CloseWrite()
+	if got, _ := io.ReadAll(r.clientPeer); string(got) != "ping" {
+		t.Fatalf("echo %q", got)
+	}
+	return waitResult(t, res, 5*time.Second)
+}
+
+func TestSpliceProbeFailureFallsBackToGeneric(t *testing.T) {
+	var calls atomic.Int32
+	resetProbe(t, func() error { calls.Add(1); return syscall.EPERM })
+	for i := 0; i < 2; i++ {
+		if out := runEcho(t); out.Mode != ModeGeneric || out.Err != nil {
+			t.Fatalf("result %+v", out)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("probe ran %d times", calls.Load())
+	}
+}
+
+func TestSpliceProbeSuccessKeepsSplice(t *testing.T) {
+	resetProbe(t, func() error { return nil })
+	if out := runEcho(t); out.Mode != ModeSplice || out.Err != nil {
+		t.Fatalf("result %+v", out)
+	}
+}
+
+func TestRealSpliceProbe(t *testing.T) {
+	if err := probeSplice(); err != nil {
+		t.Skipf("splice unavailable here: %v", err)
 	}
 }

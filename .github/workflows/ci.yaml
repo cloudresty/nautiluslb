@@ -1,30 +1,39 @@
 name: CI
 
-# Lint, unit tests (race), vulnerability scan, image build and a kind-based
-# end-to-end test on every push and PR. A version tag additionally publishes
-# the multi-arch image to Docker Hub once every check has passed.
+# The gate every change passes: format, vet, race tests with coverage, the
+# in-process integration suite, a fuzz smoke run, lint, vulnerability scan,
+# Helm chart lint and drift check, a multi-arch image build and the kind-based
+# end-to-end test.
+#
+# Runs on pushes to main/develop and on PRs against them. It publishes nothing:
+# release.yaml calls this workflow (workflow_call) on a version tag and only
+# publishes once every job here has passed.
 #
 # Third-party actions are pinned to full commit SHAs; the trailing comment is
-# the release tag the SHA was resolved from.
+# the release tag the SHA was resolved from (annotated tags dereferenced).
 
 on:
   push:
     branches: [ main, develop ]
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   pull_request:
     branches: [ main, develop ]
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
+  # When called from release.yaml, github.workflow is the caller's name, so the
+  # group never collides with the caller's own concurrency group.
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GOLANGCI_LINT_VERSION: v2.14.0
   GOVULNCHECK_VERSION: v1.8.0
+  ACTIONLINT_VERSION: v1.7.12
+  HELM_VERSION: v4.3.0
+  CT_VERSION: 3.14.0
 
 jobs:
   test:
@@ -58,7 +67,9 @@ jobs:
           fi
 
       - name: Vet
-        run: go vet ./...
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
 
       - name: Test (race, coverage)
         run: go test -race -coverprofile=coverage.out ./...
@@ -76,6 +87,42 @@ jobs:
           go build -trimpath -o nautiluslb ./cmd/nautiluslb
           ./nautiluslb -help
           ./nautiluslb --version
+
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      EMIT_LEVEL: error
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: Integration tests (race)
+        run: make integration
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: Fuzz every target for 10s
+        run: make fuzz FUZZTIME=10s FUZZMINIMIZE=0
 
   lint:
     runs-on: ubuntu-latest
@@ -116,6 +163,64 @@ jobs:
       - name: govulncheck
         run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
 
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache: false
+
+      - name: actionlint (shellcheck is preinstalled on the runner)
+        run: go run "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}" -color
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # ct inspects git history
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Set up Python (for ct's yamllint and yamale)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+
+      - name: Set up chart-testing
+        uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
+        with:
+          version: ${{ env.CT_VERSION }}
+
+      - name: helm lint --strict
+        run: |
+          helm lint --strict deploy/helm/nautiluslb
+          for values in deploy/helm/nautiluslb/ci/*.yaml; do
+            echo "==> ${values}"
+            helm lint --strict deploy/helm/nautiluslb --values "${values}"
+          done
+
+      - name: ct lint (every ci/*-values.yaml)
+        run: ct lint --config .github/ct.yaml --charts deploy/helm/nautiluslb --validate-maintainers=false
+
+      - name: Raw manifests match the chart (drift check)
+        run: |
+          # yq (v4) and kubectl are preinstalled on ubuntu-latest; the script
+          # falls back to python3/PyYAML when yq is missing.
+          yq --version || true
+          kubectl version --client
+          bash deploy/check-drift.sh
+
   docker-build:
     runs-on: ubuntu-latest
     steps:
@@ -126,6 +231,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
+      # The builder stage runs on the build platform and cross-compiles, and the
+      # final stage has no RUN, so no QEMU is needed for arm64.
       - name: Build Docker image (all release platforms, no push)
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
@@ -142,7 +249,7 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -154,65 +261,29 @@ jobs:
           install_only: true
 
       - name: End-to-end test (kind)
-        run: ./test/e2e/run.sh
-
-  docker-release:
-    runs-on: ubuntu-latest
-    needs: [ test, lint, vuln, docker-build, e2e ]
-    if: startsWith(github.ref, 'refs/tags/v')
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0 # every tag, to decide whether this one is the highest
-          persist-credentials: false
-
-      - name: Compute image tags
-        id: tags
+        shell: bash # -eo pipefail, so tee does not hide the exit code
         env:
-          TAG: ${{ github.ref_name }}
+          KEEP: '1' # keep the cluster so its logs can be exported on failure
         run: |
-          highest="$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1)"
-          echo "Release tag: ${TAG}; highest release tag: ${highest}"
-          {
-            echo 'list<<EOF'
-            echo "cloudresty/nautiluslb:${TAG}"
-            # Never move latest backwards (e.g. when a patch for an older line is tagged).
-            if [ "${TAG}" = "${highest}" ]; then
-              echo "cloudresty/nautiluslb:latest"
-            fi
-            echo 'EOF'
-          } >> "$GITHUB_OUTPUT"
+          mkdir -p e2e-logs
+          make e2e 2>&1 | tee e2e-logs/run.log
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-
-      - name: Login to Docker Hub
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          username: ${{ vars.CLR__DOCKER_HUB_USERNAME }}
-          password: ${{ secrets.CLR__DOCKER_HUB_PAT }}
-
-      - name: Build and push Docker image
-        id: push
-        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: ./build/Dockerfile
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            VERSION=${{ github.ref_name }}
-            COMMIT=${{ github.sha }}
-          tags: ${{ steps.tags.outputs.list }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: mode=max
-          sbom: true
-
-      - name: Image digest
-        env:
-          DIGEST: ${{ steps.push.outputs.digest }}
-          TAGS: ${{ steps.tags.outputs.list }}
+      - name: Collect e2e logs
+        if: failure()
+        shell: bash
         run: |
-          echo "Pushed ${DIGEST} as:"
-          echo "${TAGS}"
+          set +e
+          kind export logs --name nautiluslb-e2e e2e-logs/kind
+          docker logs nautiluslb-e2e > e2e-logs/nautiluslb.log 2>&1
+          docker logs nautiluslb-e2e-strict > e2e-logs/nautiluslb-strict.log 2>&1
+          docker ps -a > e2e-logs/docker-ps.txt 2>&1
+          exit 0
+
+      - name: Upload e2e logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-logs
+          path: e2e-logs/
+          retention-days: 7
+          if-no-files-found: ignore

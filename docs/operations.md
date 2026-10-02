@@ -170,6 +170,8 @@ On the [splice path](#linux-splice), payload bytes do not cross into user space.
 
 On Linux (all architectures except 386), a TCP/TLS connection is copied with `splice(2)` when both sockets are plain TCP sockets and the kernel exposes the `TCP_INFO` byte counters that NautilusLB needs: `tcpi_bytes_acked`, `tcpi_bytes_received` and `tcpi_notsent_bytes`. **Linux 4.6 or newer** provides them. Otherwise, as on older kernels or other operating systems, the generic user-space copy is used with identical behaviour. The data a TLS or PROXY listener has already read (the ClientHello, PROXY leftovers) is written first, and the rest of the connection is spliced.
 
+NautilusLB probes `splice(2)` once, at the first connection eligible for it. If a seccomp profile or systemd `SystemCallFilter` blocks the call (`EPERM`, `ENOSYS`, `EACCES`), it logs one warning, `splice(2) unavailable, using the generic copy path for all connections`, and serves every connection on the generic path for the life of the process. The probe matters because Go's own `ReadFrom` falls back to a user-space copy only on `EINVAL`: without it, a blocked `splice` would fail each connection with no data forwarded.
+
 On the splice path, the 2-minute half-close and write-stall bounds and `idleTimeout` are enforced by one watchdog that samples `TCP_INFO` every 10s, so they fire with up to 10s of extra delay. The generic path enforces them with socket deadlines.
 
 Check which path runs:

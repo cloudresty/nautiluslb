@@ -136,7 +136,7 @@ func WriteHeader(w io.Writer, v Version, src, dst net.Addr) error {
 		}
 		buf.WriteByte(fp)
 		a1, a2 := s.AsSlice(), d.AsSlice()
-		_ = binary.Write(&buf, binary.BigEndian, uint16(len(a1)+len(a2)+4))
+		_ = binary.Write(&buf, binary.BigEndian, uint16(len(a1)+len(a2)+4)) //nolint:gosec // G115: at most 2*16+4 bytes
 		buf.Write(a1)
 		buf.Write(a2)
 		_ = binary.Write(&buf, binary.BigEndian, sap.Port())

@@ -115,7 +115,7 @@ func open(output string) (io.Writer, io.Closer, error) {
 	if !filepath.IsAbs(output) {
 		return nil, nil, fmt.Errorf("accessLog output %q: must be stdout, stderr or an absolute path", output)
 	}
-	f, err := os.OpenFile(output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640)
+	f, err := os.OpenFile(output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o640) //nolint:gosec // G302/G304: operator-configured absolute path; 0640 lets a log shipper group read the file
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening access log %q: %w", output, err)
 	}

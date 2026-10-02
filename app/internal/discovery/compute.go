@@ -291,7 +291,7 @@ func serviceEndpoints(svc *corev1.Service, spec config.PoolSpec, slicesByService
 	weight := serviceWeight(svc, w)
 	mk := func(ip netip.Addr, port int32, node string) backend.Endpoint {
 		return backend.Endpoint{
-			Address:   netip.AddrPortFrom(ip, uint16(port)),
+			Address:   netip.AddrPortFrom(ip, uint16(port)), //nolint:gosec // G115: Kubernetes validates endpoint ports to 1..65535
 			Weight:    weight,
 			Namespace: svc.Namespace,
 			Service:   svc.Name,

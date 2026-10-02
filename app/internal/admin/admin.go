@@ -96,7 +96,7 @@ func (s *Server) Start() error {
 	if addr == "" {
 		return nil
 	}
-	ln, err := net.Listen("tcp", addr)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return fmt.Errorf("admin listen on %q: %w", addr, err)
 	}

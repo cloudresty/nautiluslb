@@ -480,7 +480,7 @@ func cidrProblems(name string, cidrs []string) []error {
 	var errs []error
 	for _, c := range cidrs {
 		if _, err := netip.ParsePrefix(c); err != nil {
-			errs = append(errs, fmt.Errorf("invalid %s entry %q: %v", name, c, err))
+			errs = append(errs, fmt.Errorf("invalid %s entry %q: %w", name, c, err))
 		}
 	}
 	return errs

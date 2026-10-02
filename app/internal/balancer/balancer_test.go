@@ -72,7 +72,8 @@ func TestLeastConn(t *testing.T) {
 		bs[1].TryAcquire()
 	}
 	for i := 0; i < 4; i++ {
-		bs[2].TryAcquire() // 4/2 = 2.0 < 3 < 5
+		// Load ends at 4/2 = 2.0, between 3 and 5.
+		bs[2].TryAcquire()
 	}
 	got := p.Pick(snap, Key{}, 3)
 	if got[0] != bs[2] || got[1] != bs[1] || got[2] != bs[0] {

@@ -20,7 +20,7 @@ func benchRun(b *testing.B, mode string) {
 		if mode == ModeSplice {
 			w := NewWatchdog(0, 0)
 			w.Start(context.Background())
-			defer w.Stop()
+			b.Cleanup(w.Stop)
 			opts.Watchdog = w
 		}
 		res := runAsync(r.client, r.upstream, opts)
@@ -55,7 +55,7 @@ func benchCopyThroughput(b *testing.B, mode string) {
 			w := NewWatchdog(0, 0)
 			w.Start(context.Background())
 			opts.Watchdog = w
-			defer w.Stop()
+			b.Cleanup(w.Stop)
 		}
 		res := runAsync(r.client, r.upstream, opts)
 		go func() {

@@ -1,0 +1,64 @@
+version: "2"
+
+run:
+  go: "1.27"
+  tests: true
+
+linters:
+  default: standard # errcheck, govet, ineffassign, staticcheck, unused
+  enable:
+    - bodyclose
+    - contextcheck
+    - copyloopvar
+    - durationcheck
+    - errorlint
+    - gocritic
+    - gosec
+    - makezero
+    - misspell
+    - nilerr
+    - noctx
+    - unconvert
+  settings:
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - performance
+      disabled-checks:
+        # Config/spec/options structs are passed by value once at startup or
+        # reload (never per connection/packet); by-value keeps them immutable
+        # for the callee. Pointer churn would touch many signatures for no gain.
+        - hugeParam
+        - rangeValCopy
+    gosec:
+      excludes:
+        # G114 (net/http serve without timeouts) targets http.ListenAndServe /
+        # http.Serve. The admin server builds its own http.Server with explicit
+        # timeouts, so the finding does not apply.
+        - G114
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      # Tests: fixed paths, throwaway sockets, plain-HTTP helpers and
+      # InsecureSkipVerify against test CAs are fine; production code is not
+      # relaxed.
+      - path: _test\.go
+        linters:
+          - gosec
+          - noctx
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/cloudresty/nautiluslb

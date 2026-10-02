@@ -2,6 +2,7 @@ package udpproxy
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/netip"
 	"runtime"
@@ -404,7 +405,7 @@ func TestUpdate(t *testing.T) {
 	}
 	bad := baseCfg()
 	bad.ListenerAddress = "127.0.0.1:1"
-	if err := h.l.Update(bad, map[string]Pool{"dns": pa}); err != ErrAddressChanged {
+	if err := h.l.Update(bad, map[string]Pool{"dns": pa}); !errors.Is(err, ErrAddressChanged) {
 		t.Fatalf("err = %v", err)
 	}
 	cfg := baseCfg()

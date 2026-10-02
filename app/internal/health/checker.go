@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cloudresty/emit"
+
 	"github.com/cloudresty/nautiluslb/internal/backend"
 	"github.com/cloudresty/nautiluslb/internal/metrics"
 )
@@ -124,7 +125,7 @@ func (c *Checker) Start(ctx context.Context) {
 
 	c.started = true
 	c.ctx = ctx
-	c.reconcileLocked()
+	c.reconcileLocked() //nolint:contextcheck // reconcileLocked reads the ctx stored in c.ctx on the line above
 
 }
 
