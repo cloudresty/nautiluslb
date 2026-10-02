@@ -3,6 +3,7 @@ package utils
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -131,23 +132,105 @@ configurations:
 	}
 }
 
-func TestLoadConfigEmptyFile(t *testing.T) {
-	// Create an empty config file
-	tempDir := t.TempDir()
-	configFile := filepath.Join(tempDir, "empty_config.yaml")
-
-	err := os.WriteFile(configFile, []byte(""), 0644)
-	if err != nil {
+func writeTemp(t *testing.T, content string) string {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(f, []byte(content), 0644); err != nil {
 		t.Fatalf("Failed to create test config file: %v", err)
 	}
+	return f
+}
 
-	cfg, err := LoadConfig(configFile)
+const validDoc = `configurations:
+  - name: web
+    listenerAddress: ":8080"
+    backendPortName: http
+    namespaces: [default]
+`
+
+func TestLoadConfigRejects(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{"empty file", "", "file is empty"},
+		{"whitespace only", "\n\n", "file is empty"},
+		{"null document", "---\n", "no configurations defined"},
+		{"no configurations", "settings:\n  kubeconfigPath: \"\"\n", "no configurations defined"},
+		{"namespce typo", `configurations:
+  - name: web
+    listenerAddress: ":8080"
+    backendPortName: http
+    namespce: default
+`, "field namespce not found"},
+		{"unknown top-level key", validDoc + "extra: 1\n", "field extra not found"},
+		{"multiple documents", validDoc + "---\n" + validDoc, "multiple YAML documents"},
+		{"missing namespaces", `configurations:
+  - name: web
+    listenerAddress: ":8080"
+    backendPortName: http
+`, "no namespaces configured"},
+		{"duplicate names", validDoc + `  - name: web
+    listenerAddress: ":9090"
+    backendPortName: http
+    namespaces: [default]
+`, "duplicate name"},
+		{"listener conflict", validDoc + `  - name: other
+    listenerAddress: "10.0.0.1:8080"
+    backendPortName: http
+    namespaces: [default]
+`, "conflicts with configurations[0]"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := writeTemp(t, tt.content)
+			_, err := LoadConfig(f)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v; want containing %q", err, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), f) {
+				t.Errorf("error %q does not name the file", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfigExample(t *testing.T) {
+	cfg, err := LoadConfig(filepath.Join("..", "config.example.yaml"))
 	if err != nil {
-		t.Fatalf("LoadConfig() failed for empty file: %v", err)
+		t.Fatalf("LoadConfig(config.example.yaml) failed: %v", err)
+	}
+	if len(cfg.BackendConfigurations) != 3 {
+		t.Errorf("expected 3 configurations, got %d", len(cfg.BackendConfigurations))
+	}
+}
+
+func FuzzLoadConfig(f *testing.F) {
+	f.Add([]byte(validDoc))
+	f.Add([]byte(""))
+	f.Add([]byte("---\n"))
+	f.Add([]byte(validDoc + "---\n" + validDoc))
+	f.Add([]byte("configurations: [1, 2"))
+	f.Add([]byte("configurations:\n  - name: a\n    namespces: x\n"))
+	if data, err := os.ReadFile(filepath.Join("..", "config.example.yaml")); err == nil {
+		f.Add(data)
 	}
 
-	// Empty file should result in default values
-	if len(cfg.BackendConfigurations) != 0 {
-		t.Errorf("Expected 0 backend configurations for empty file, got %d", len(cfg.BackendConfigurations))
-	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		cfg, err := parseConfig("fuzz.yaml", data)
+		if err != nil {
+			return
+		}
+		// Anything accepted must be fully usable by discovery
+		for _, bc := range cfg.BackendConfigurations {
+			if len(bc.DiscoveryNamespaces()) == 0 {
+				t.Fatalf("accepted configuration %q with no discovery namespaces", bc.Name)
+			}
+			if _, err := bc.GetListenerPort(); err != nil {
+				t.Fatalf("accepted configuration %q with bad listener: %v", bc.Name, err)
+			}
+		}
+	})
 }

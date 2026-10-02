@@ -1,0 +1,46 @@
+# NautilusLB example configuration. Copy to config.yaml (which is git-ignored)
+# and adjust.
+#
+# Every Kubernetes Service that NautilusLB should balance to must carry BOTH
+# annotations:
+#
+#   nautiluslb.cloudresty.io/enabled: "true"
+#   nautiluslb.cloudresty.io/configurations: "<name>[,<name>...]"
+#
+# where <name> is the `name` of one or more configurations below. A Service
+# only joins the pools of the configurations it names.
+#
+# Unknown keys are rejected at startup, so typos fail fast instead of being
+# silently ignored.
+
+settings:
+  # Path to a kubeconfig file. Leave empty to use in-cluster configuration.
+  kubeconfigPath: ""
+
+configurations:
+  # Unique name: letters, digits, '.', '_' or '-'; max 63 chars.
+  - name: http_traffic_configuration
+    # ":port" listens on all interfaces; "<ip>:port" binds one address.
+    # Listener addresses must not overlap (":80" conflicts with "10.0.0.1:80").
+    listenerAddress: ":80"
+    # Name of the Service port to forward to.
+    backendPortName: http
+    # Namespaces searched for Services (at least one is required).
+    # Use ["*"] to discover Services cluster-wide; it cannot be combined
+    # with other entries.
+    namespaces:
+      - ingress-nginx
+
+  - name: https_traffic_configuration
+    listenerAddress: ":443"
+    backendPortName: https
+    namespaces:
+      - ingress-nginx
+
+  - name: mongodb_configuration
+    listenerAddress: ":27017"
+    backendPortName: mongodb
+    namespaces:
+      - databases
+    # Backend request timeout in seconds; 0 or omitted uses the default.
+    requestTimeout: 5
