@@ -8,7 +8,7 @@ import (
 
 	"github.com/cloudresty/emit"
 	"github.com/cloudresty/nautiluslb/config"
-	"gopkg.in/yaml.v3"
+	"go.yaml.in/yaml/v3"
 )
 
 //

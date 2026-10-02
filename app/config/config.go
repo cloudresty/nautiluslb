@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -14,13 +15,56 @@ type Config struct {
 	BackendConfigurations []Configuration `yaml:"configurations"`
 }
 
+// ServiceEnabledAnnotation marks a Service as a NautilusLB backend.
+const ServiceEnabledAnnotation = "nautiluslb.cloudresty.io/enabled"
+
+// ServiceConfigurationsAnnotation binds a Service to configurations by name,
+// as a comma-separated list. A Service is a backend of a configuration only
+// when it names it here: matching on the port name alone would let any
+// annotated Service with a port called "https" join that listener's pool.
+const ServiceConfigurationsAnnotation = "nautiluslb.cloudresty.io/configurations"
+
+// AllNamespaces in Namespaces opts a configuration into cluster-wide
+// discovery. It must be the only entry.
+const AllNamespaces = "*"
+
 // Configuration represents the configuration for a backend.
 type Configuration struct {
 	Name            string `yaml:"name"`
 	ListenerAddress string `yaml:"listenerAddress"`
 	RequestTimeout  int    `yaml:"requestTimeout,omitempty"`
 	BackendPortName string `yaml:"backendPortName"`
-	Namespace       string `yaml:"namespace,omitempty"`
+
+	// Namespace is the single-namespace form, kept for existing configs.
+	// It is merged with Namespaces.
+	Namespace string `yaml:"namespace,omitempty"`
+
+	// Namespaces is the allowlist of namespaces searched for Services.
+	// At least one namespace (or AllNamespaces) is required: an empty list
+	// is refused rather than read as cluster-wide.
+	Namespaces []string `yaml:"namespaces,omitempty"`
+}
+
+// DiscoveryNamespaces returns the namespaces to list Services in: Namespace
+// and Namespaces merged, deduplicated and sorted. Cluster-wide discovery is
+// returned as a single metav1.NamespaceAll (""). Call it only on a validated
+// configuration.
+func (bc *Configuration) DiscoveryNamespaces() []string {
+	seen := make(map[string]bool)
+	var namespaces []string
+	for _, ns := range append([]string{bc.Namespace}, bc.Namespaces...) {
+		ns = strings.TrimSpace(ns)
+		if ns == "" || seen[ns] {
+			continue
+		}
+		if ns == AllNamespaces {
+			return []string{""}
+		}
+		seen[ns] = true
+		namespaces = append(namespaces, ns)
+	}
+	sort.Strings(namespaces)
+	return namespaces
 }
 
 // Validate validates the backend configuration.
