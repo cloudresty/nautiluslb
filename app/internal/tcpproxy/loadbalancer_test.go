@@ -65,7 +65,7 @@ func backendAt(t *testing.T, addr string) *backend.BackendServer {
 	if err != nil {
 		t.Fatalf("port %q: %v", portStr, err)
 	}
-	return backend.New(port, host, port, "http")
+	return backend.NewServer(port, host, port, "http")
 }
 
 // refusingAddr returns a loopback address with nothing listening on it, so a
@@ -196,7 +196,7 @@ func blackholeDial(ctx context.Context, _, _ string) (net.Conn, error) {
 
 func TestBlackholedBackendIsBoundedByDialTimeout(t *testing.T) {
 
-	lb := newTestLB(t, backend.New(1, "192.0.2.1", 80, "http"))
+	lb := newTestLB(t, backend.NewServer(1, "192.0.2.1", 80, "http"))
 	lb.dialTimeout = 100 * time.Millisecond
 	lb.dial = blackholeDial
 
@@ -219,7 +219,7 @@ func TestBlackholedBackendIsBoundedByDialTimeout(t *testing.T) {
 func TestBlackholedBackendFailsOverWithinRetryBudget(t *testing.T) {
 
 	good := backendAt(t, echoServer(t))
-	hole := backend.New(1, "192.0.2.1", 80, "http")
+	hole := backend.NewServer(1, "192.0.2.1", 80, "http")
 
 	lb := newTestLB(t, hole, good)
 	lb.nextServer = len(lb.backendServers) - 1
@@ -249,7 +249,7 @@ func TestEveryBackendFailingStaysWithinRetryBudget(t *testing.T) {
 
 	var backends []*backend.BackendServer
 	for i := range 5 {
-		backends = append(backends, backend.New(i, "192.0.2.1", 1000+i, "http"))
+		backends = append(backends, backend.NewServer(i, "192.0.2.1", 1000+i, "http"))
 	}
 
 	lb := newTestLB(t, backends...)
@@ -294,7 +294,7 @@ func TestPanicWhileProxyingIsContainedToTheConnection(t *testing.T) {
 	for name, wrap := range wrappers {
 		t.Run(name, func(t *testing.T) {
 
-			lb := newTestLB(t, backend.New(1, "192.0.2.1", 80, "http"))
+			lb := newTestLB(t, backend.NewServer(1, "192.0.2.1", 80, "http"))
 			lb.dial = func(context.Context, string, string) (net.Conn, error) {
 				a, b := net.Pipe()
 				go func() { _, _ = io.Copy(io.Discard, b) }()
@@ -326,7 +326,7 @@ func TestPanicWhileProxyingIsContainedToTheConnection(t *testing.T) {
 // handler's own recover.
 func TestPanicBeforeProxyingIsContained(t *testing.T) {
 
-	lb := newTestLB(t, backend.New(1, "192.0.2.1", 80, "http"))
+	lb := newTestLB(t, backend.NewServer(1, "192.0.2.1", 80, "http"))
 	lb.dial = func(context.Context, string, string) (net.Conn, error) { panic("boom in dial") }
 
 	client, server := net.Pipe()
@@ -439,10 +439,10 @@ func TestDialTimeoutFor(t *testing.T) {
 
 func TestNextBackendsRoundRobinSkipsUnhealthy(t *testing.T) {
 
-	a := backend.New(1, "10.0.0.1", 80, "http")
-	b := backend.New(2, "10.0.0.2", 80, "http")
-	c := backend.New(3, "10.0.0.3", 80, "http")
-	other := backend.New(4, "10.0.0.4", 81, "https")
+	a := backend.NewServer(1, "10.0.0.1", 80, "http")
+	b := backend.NewServer(2, "10.0.0.2", 80, "http")
+	c := backend.NewServer(3, "10.0.0.3", 80, "http")
+	other := backend.NewServer(4, "10.0.0.4", 81, "https")
 	b.SetHealthy(false)
 
 	lb := newTestLB(t, a, b, c, other)
@@ -474,8 +474,8 @@ func TestNextBackendsRoundRobinSkipsUnhealthy(t *testing.T) {
 
 func TestNextBackendsFallsBackWhenNoneHealthy(t *testing.T) {
 
-	a := backend.New(1, "10.0.0.1", 80, "http")
-	b := backend.New(2, "10.0.0.2", 80, "http")
+	a := backend.NewServer(1, "10.0.0.1", 80, "http")
+	b := backend.NewServer(2, "10.0.0.2", 80, "http")
 	a.SetHealthy(false)
 	b.SetHealthy(false)
 
@@ -497,13 +497,13 @@ func TestNextBackendsEmpty(t *testing.T) {
 // health state and running health check.
 func TestSetBackendServersPreservesKnownBackends(t *testing.T) {
 
-	lb := newTestLB(t, backend.New(1, "10.0.0.1", 80, "http"))
+	lb := newTestLB(t, backend.NewServer(1, "10.0.0.1", 80, "http"))
 	original := lb.GetBackendServers()[0]
 	original.SetHealthy(false)
 
 	lb.SetBackendServers([]*backend.BackendServer{
-		backend.New(9, "10.0.0.1", 80, "http"),
-		backend.New(10, "10.0.0.2", 80, "http"),
+		backend.NewServer(9, "10.0.0.1", 80, "http"),
+		backend.NewServer(10, "10.0.0.2", 80, "http"),
 	})
 
 	servers := lb.GetBackendServers()
@@ -520,7 +520,7 @@ func TestSetBackendServersPreservesKnownBackends(t *testing.T) {
 
 func TestHealthChecksFollowBackendsAndStop(t *testing.T) {
 
-	lb := newTestLB(t, backend.New(1, "127.0.0.1", 1, "http"))
+	lb := newTestLB(t, backend.NewServer(1, "127.0.0.1", 1, "http"))
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -541,8 +541,8 @@ func TestHealthChecksFollowBackendsAndStop(t *testing.T) {
 	}
 
 	lb.SetBackendServers([]*backend.BackendServer{
-		backend.New(2, "127.0.0.1", 2, "http"),
-		backend.New(3, "127.0.0.1", 3, "http"),
+		backend.NewServer(2, "127.0.0.1", 2, "http"),
+		backend.NewServer(3, "127.0.0.1", 3, "http"),
 	})
 	if got := count(); got != 2 {
 		t.Fatalf("health checks after rediscovery = %d, want 2", got)
@@ -586,7 +586,7 @@ func TestStopBeforeStart(t *testing.T) {
 // the same backends concurrently.
 func TestConcurrentDiscoveryHealthAndSelection(t *testing.T) {
 
-	lb := newTestLB(t, backend.New(1, "10.0.0.1", 80, "http"))
+	lb := newTestLB(t, backend.NewServer(1, "10.0.0.1", 80, "http"))
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
@@ -601,8 +601,8 @@ func TestConcurrentDiscoveryHealthAndSelection(t *testing.T) {
 			default:
 			}
 			lb.SetBackendServers([]*backend.BackendServer{
-				backend.New(1, "10.0.0.1", 80, "http"),
-				backend.New(2, "10.0.0.2", 80+i%2, "http"),
+				backend.NewServer(1, "10.0.0.1", 80, "http"),
+				backend.NewServer(2, "10.0.0.2", 80+i%2, "http"),
 			})
 		}
 	}()

@@ -513,7 +513,7 @@ func processServiceForConfig(service corev1.Service, cfg config.Configuration, n
 			}
 
 			for _, nodeIP := range nodeIPs {
-				backends = append(backends, backend.New(0, nodeIP, int(port.NodePort), port.Name))
+				backends = append(backends, backend.NewServer(0, nodeIP, int(port.NodePort), port.Name))
 			}
 		}
 
@@ -529,7 +529,7 @@ func processServiceForConfig(service corev1.Service, cfg config.Configuration, n
 				continue
 			}
 
-			backends = append(backends, backend.New(0, service.Spec.ClusterIP, int(port.Port), port.Name))
+			backends = append(backends, backend.NewServer(0, service.Spec.ClusterIP, int(port.Port), port.Name))
 		}
 
 	default:

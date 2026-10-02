@@ -4,18 +4,17 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestConfigStructure(t *testing.T) {
-	// Test that the Config struct can be instantiated
 	config := &Config{}
-	if len(config.BackendConfigurations) != 0 {
-		t.Error("New Config should have empty BackendConfigurations")
+	if len(config.Configurations) != 0 {
+		t.Error("New Config should have empty Configurations")
 	}
 }
 
 func TestConfigurationStructure(t *testing.T) {
-	// Test that the Configuration struct can be instantiated
 	config := &Configuration{}
 	if config.Name != "" {
 		t.Error("New Configuration should have empty Name")
@@ -23,18 +22,13 @@ func TestConfigurationStructure(t *testing.T) {
 }
 
 func TestGetListenerPort(t *testing.T) {
-	config := &Configuration{
-		ListenerAddress: ":8080",
-	}
-
+	config := &Configuration{ListenerAddress: ":8080"}
 	port, err := config.GetListenerPort()
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
-
-	expected := 8080
-	if port != expected {
-		t.Errorf("Expected port %d, got %d", expected, port)
+	if port != 8080 {
+		t.Errorf("Expected port 8080, got %d", port)
 	}
 }
 
@@ -58,6 +52,27 @@ func validConfiguration() Configuration {
 	}
 }
 
+func validConfig(cs ...Configuration) *Config {
+	if len(cs) == 0 {
+		cs = []Configuration{validConfiguration()}
+	}
+	return &Config{APIVersion: APIVersion, Kind: Kind, Configurations: cs}
+}
+
+// expectErr asserts err contains want ("" = no error).
+func expectErr(t *testing.T, err error, want string) {
+	t.Helper()
+	if want == "" {
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		return
+	}
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v; want containing %q", err, want)
+	}
+}
+
 func TestConfigurationValidate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -74,6 +89,7 @@ func TestConfigurationValidate(t *testing.T) {
 		{"empty name", func(c *Configuration) { c.Name = "" }, "'name' cannot be empty"},
 		{"name with comma", func(c *Configuration) { c.Name = "a,b" }, "invalid name"},
 		{"name with space", func(c *Configuration) { c.Name = "a b" }, "invalid name"},
+		{"name with slash", func(c *Configuration) { c.Name = "a/b" }, "invalid name"},
 		{"name leading dash", func(c *Configuration) { c.Name = "-a" }, "invalid name"},
 		{"name too long", func(c *Configuration) { c.Name = strings.Repeat("a", 64) }, "invalid name"},
 		{"empty listener", func(c *Configuration) { c.ListenerAddress = "" }, "'listenerAddress' cannot be empty"},
@@ -98,31 +114,20 @@ func TestConfigurationValidate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := validConfiguration()
 			tt.mutate(&c)
-			err := c.Validate()
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("error = %v; want containing %q", err, tt.wantErr)
-			}
+			expectErr(t, validConfig(c).Validate(), tt.wantErr)
 		})
 	}
 }
 
 func TestConfigValidateReportsAllProblems(t *testing.T) {
-	cfg := Config{BackendConfigurations: []Configuration{
-		{Name: "a b", ListenerAddress: "8080", BackendPortName: "http", Namespaces: []string{"default"}},
-		{Name: "ok", ListenerAddress: ":80", BackendPortName: "BAD", RequestTimeout: -5},
-	}}
-
+	cfg := validConfig(
+		Configuration{Name: "a b", ListenerAddress: "8080", BackendPortName: "http", Namespaces: []string{"default"}},
+		Configuration{Name: "ok", ListenerAddress: ":80", BackendPortName: "BAD", RequestTimeout: -5},
+	)
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error")
 	}
-
 	for _, want := range []string{
 		"configurations[0] (a b): invalid name",
 		"configurations[0] (a b): invalid listenerAddress",
@@ -137,18 +142,17 @@ func TestConfigValidateReportsAllProblems(t *testing.T) {
 }
 
 func TestConfigValidateNoConfigurations(t *testing.T) {
-	if err := (&Config{}).Validate(); err == nil {
-		t.Fatal("expected error for zero configurations")
+	if err := validConfig().Validate(); err != nil {
+		t.Fatal(err)
 	}
+	c := &Config{APIVersion: APIVersion, Kind: Kind}
+	expectErr(t, c.Validate(), "no configurations defined")
 }
 
 func TestConfigValidateDuplicateNames(t *testing.T) {
 	a, b := validConfiguration(), validConfiguration()
 	b.ListenerAddress = ":9090"
-	err := (&Config{BackendConfigurations: []Configuration{a, b}}).Validate()
-	if err == nil || !strings.Contains(err.Error(), "configurations[1] (web): duplicate name, already used by configurations[0]") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	expectErr(t, validConfig(a, b).Validate(), "configurations[1] (web): duplicate name, already used by configurations[0]")
 }
 
 func TestConfigValidateListenerConflicts(t *testing.T) {
@@ -179,18 +183,51 @@ func TestConfigValidateListenerConflicts(t *testing.T) {
 			a.ListenerAddress = tt.a
 			b.Name = "other"
 			b.ListenerAddress = tt.b
-			err := (&Config{BackendConfigurations: []Configuration{a, b}}).Validate()
+			err := validConfig(a, b).Validate()
 			if tt.conflict {
-				if err == nil || !strings.Contains(err.Error(), "conflicts with configurations[0]") {
-					t.Fatalf("expected conflict, got %v", err)
-				}
+				expectErr(t, err, "conflicts with configurations[0]")
 				return
 			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+			expectErr(t, err, "")
 		})
 	}
+}
+
+func TestListenerConflictsPerProtocolFamily(t *testing.T) {
+	tests := []struct {
+		pa, pb   Protocol
+		conflict bool
+	}{
+		{ProtocolTCP, ProtocolUDP, false},
+		{ProtocolUDP, ProtocolUDP, true},
+		{ProtocolTCP, ProtocolTCP, true},
+		{ProtocolTLS, ProtocolTCP, true},
+		{ProtocolTLS, ProtocolUDP, false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.pa)+"_"+string(tt.pb), func(t *testing.T) {
+			a, b := udpOrTLS(tt.pa, "a"), udpOrTLS(tt.pb, "b")
+			err := validConfig(a, b).Validate()
+			if tt.conflict {
+				expectErr(t, err, "conflicts with configurations[0]")
+				return
+			}
+			expectErr(t, err, "")
+		})
+	}
+}
+
+// udpOrTLS builds a valid configuration of the given protocol on :53/:443-style shared port 9000.
+func udpOrTLS(p Protocol, name string) Configuration {
+	c := validConfiguration()
+	c.Name, c.Protocol, c.ListenerAddress = name, p, ":9000"
+	if p == ProtocolTLS {
+		c.TLS = &TLS{Routes: []Route{{Name: "r", Hosts: []string{"a.example.com"}}}}
+	}
+	if p == ProtocolUDP {
+		c.Health = Health{Type: HealthNone}
+	}
+	return c
 }
 
 func TestDiscoveryNamespaces(t *testing.T) {
@@ -216,5 +253,67 @@ func TestDiscoveryNamespaces(t *testing.T) {
 				t.Errorf("DiscoveryNamespaces() = %#v; want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseBinding(t *testing.T) {
+	tests := []struct{ in, cfg, route string }{
+		{"a", "a", ""},
+		{"a/b", "a", "b"},
+		{" a / b ", "a", "b"},
+		{"a/b/c", "a", "b/c"},
+		{"", "", ""},
+		{"a/", "a", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			c, r := ParseBinding(tt.in)
+			if c != tt.cfg || r != tt.route {
+				t.Errorf("ParseBinding(%q) = (%q,%q); want (%q,%q)", tt.in, c, r, tt.cfg, tt.route)
+			}
+		})
+	}
+}
+
+func TestDurationYAML(t *testing.T) {
+	tests := []struct {
+		in      string
+		want    time.Duration
+		wantErr bool
+	}{
+		{"30s", 30 * time.Second, false},
+		{"1m", time.Minute, false},
+		{"200ms", 200 * time.Millisecond, false},
+		{`"1h30m"`, 90 * time.Minute, false},
+		{"5", 5 * time.Second, false},
+		{"0", 0, false},
+		{"-3s", -3 * time.Second, false},
+		{"abc", 0, true},
+		{"1.5", 0, true},
+		{"[1]", 0, true},
+		{"{a: 1}", 0, true},
+		{"99999999999999999", 0, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			cfg, err := Parse("d.yaml", []byte("settings:\n  drain:\n    timeout: "+tt.in+"\n"))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got %v", cfg.Settings.Drain.Timeout)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Settings.Drain.Timeout.Std(); got != tt.want {
+				t.Errorf("got %v want %v", got, tt.want)
+			}
+		})
+	}
+
+	out, err := Duration(90 * time.Second).MarshalYAML()
+	if err != nil || out != "1m30s" {
+		t.Errorf("MarshalYAML = %v, %v", out, err)
 	}
 }

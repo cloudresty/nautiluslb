@@ -89,10 +89,10 @@ func main() {
 	// Initialize Kubernetes client
 	//
 
-	_, currentContext, err := discovery.GetK8sClient(configData.Settings.KubeconfigPath)
+	_, currentContext, err := discovery.GetK8sClient(configData.Settings.Kubernetes.Kubeconfig)
 	if err != nil {
 		emit.Error.StructuredFields("Failed to initialize Kubernetes client",
-			emit.ZString("kubeconfig_path", configData.Settings.KubeconfigPath),
+			emit.ZString("kubeconfig_path", configData.Settings.Kubernetes.Kubeconfig),
 			emit.ZString("error", err.Error()))
 		os.Exit(1)
 	}
@@ -110,10 +110,10 @@ func main() {
 	// Create a new load balancer for each backend configuration
 	//
 
-	for _, backendConfig := range configData.BackendConfigurations {
+	for _, backendConfig := range configData.Configurations {
 
 		// Parse the duration string into a time.Duration
-		duration := time.Duration(backendConfig.RequestTimeout) * time.Second
+		duration := backendConfig.EffectiveDialTimeout()
 
 		loadBalancers = append(loadBalancers, tcpproxy.NewLoadBalancer(backendConfig, duration))
 
@@ -137,7 +137,7 @@ func main() {
 		}(lb)
 
 		emit.Info.StructuredFields("Started load balancer",
-			emit.ZString("config_name", configData.BackendConfigurations[i].Name),
+			emit.ZString("config_name", configData.Configurations[i].Name),
 			emit.ZString("listener_port", listenerPort(lb.ListenerAddress)))
 
 	}
@@ -153,7 +153,7 @@ func main() {
 	go func() {
 		defer wg.Done()
 		defer close(discoveryDone)
-		discovery.DiscoverK8sServicesForAll(discoveryCtx, lbInterfaces, configData.BackendConfigurations)
+		discovery.DiscoverK8sServicesForAll(discoveryCtx, lbInterfaces, configData.Configurations)
 	}()
 
 	sig := <-sigChan

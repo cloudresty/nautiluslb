@@ -1,0 +1,57 @@
+apiVersion: nautiluslb.cloudresty.io/v2
+kind: Config
+settings:
+  logLevel: debug
+  kubernetes: {kubeconfig: /etc/kube/config, qps: 50, burst: 100, userAgent: lb-test}
+  discovery:
+    resyncPeriod: 10m
+    debounce: 500ms
+    nodes:
+      readyOnly: false
+      skipUnschedulable: false
+      skipControlPlane: true
+      addressFamily: prefer-ipv6
+      selector: {pool: edge}
+  admin:
+    address: ""
+    pprof: true
+    metrics: {perBackend: false}
+  accessLog: {enabled: false, output: /var/log/nlb.log, bufferSize: 100}
+  limits: {maxConnections: 1000}
+  drain: {readinessDelay: 1s, timeout: 45s}
+  reload: {watchFile: true}
+configurations:
+  - name: https
+    protocol: tls
+    listenerAddress: "10.0.0.1:443"
+    namespaces: [apps]
+    backendPortName: https
+    balancer: {algorithm: source_ip_hash, slowStart: 20s}
+    health: {type: tcp, interval: 5s, timeout: 1s, rise: 2, fall: 2, jitter: 0, ejectionHold: 3s}
+    limits: {maxConnections: 10, maxConnectionsPerSource: 2, maxConnectionsPerBackend: 5}
+    access: {allow: ["10.0.0.0/8"], deny: ["10.9.0.0/16"]}
+    proxyProtocol:
+      in: {trustedCIDRs: ["10.1.0.0/16"], required: true}
+      out: v2
+    dialTimeout: 8s
+    idleTimeout: 10m
+    tls:
+      peekTimeout: 2s
+      maxClientHello: 8192
+      defaultRoute: web
+      routes:
+        - name: web
+          hosts: ["example.com", "*.example.com"]
+          balancer: {algorithm: least_conn}
+          health: {type: http, http: {path: /ready, expectStatus: [200]}}
+          limits: {maxConnectionsPerBackend: 9}
+        - name: api
+          hosts: [api.example.com]
+          backendPortName: api
+  - name: dns
+    protocol: udp
+    listenerAddress: ":53"
+    namespaces: ["*"]
+    backendPortName: dns-udp
+    health: {type: tcp, port: 53}
+    udp: {sessionIdleTimeout: 30s, maxSessions: 100, maxSessionsPerSource: 10, bufferSize: 4096}

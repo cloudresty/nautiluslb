@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-func TestNew(t *testing.T) {
-	server := New(1, "192.168.1.1", 8080, "http")
+func TestNewServer(t *testing.T) {
+	server := NewServer(1, "192.168.1.1", 8080, "http")
 
 	if server.ID != 1 || server.IP != "192.168.1.1" || server.Port != 8080 || server.PortName != "http" {
 		t.Errorf("unexpected fields: %+v", server)
@@ -30,13 +30,13 @@ func TestNew(t *testing.T) {
 }
 
 func TestAddressIPv6(t *testing.T) {
-	if got := New(1, "fd00::1", 443, "https").Address(); got != "[fd00::1]:443" {
+	if got := NewServer(1, "fd00::1", 443, "https").Address(); got != "[fd00::1]:443" {
 		t.Errorf("Address = %q", got)
 	}
 }
 
 func TestSetHealthyReportsChange(t *testing.T) {
-	server := New(1, "10.0.0.1", 80, "http")
+	server := NewServer(1, "10.0.0.1", 80, "http")
 
 	if server.SetHealthy(true) {
 		t.Error("healthy -> healthy is not a change")
@@ -56,7 +56,7 @@ func TestSetHealthyReportsChange(t *testing.T) {
 }
 
 func TestConnectionCounting(t *testing.T) {
-	server := New(1, "10.0.0.1", 80, "http")
+	server := NewServer(1, "10.0.0.1", 80, "http")
 
 	var wg sync.WaitGroup
 	for range 100 {
@@ -96,7 +96,7 @@ func TestCheckOnceMarksUnhealthyAfterThreshold(t *testing.T) {
 	listener, port := listen(t)
 	_ = listener.Close() // nothing listens: every probe is refused
 
-	server := New(1, "127.0.0.1", port, "http")
+	server := NewServer(1, "127.0.0.1", port, "http")
 	ctx := context.Background()
 
 	failures := 0
@@ -117,7 +117,7 @@ func TestCheckOnceRecovers(t *testing.T) {
 	listener, port := listen(t)
 	defer func() { _ = listener.Close() }()
 
-	server := New(1, "127.0.0.1", port, "http")
+	server := NewServer(1, "127.0.0.1", port, "http")
 	server.SetHealthy(false)
 
 	if failures := server.checkOnce(context.Background(), time.Second, 5); failures != 0 {
@@ -129,7 +129,7 @@ func TestCheckOnceRecovers(t *testing.T) {
 }
 
 func TestCheckOnceIgnoresShutdown(t *testing.T) {
-	server := New(1, "192.0.2.1", 80, "http")
+	server := NewServer(1, "192.0.2.1", 80, "http")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -148,7 +148,7 @@ func TestHealthCheckStopsOnCancel(t *testing.T) {
 	listener, port := listen(t)
 	defer func() { _ = listener.Close() }()
 
-	server := New(1, "127.0.0.1", port, "http")
+	server := NewServer(1, "127.0.0.1", port, "http")
 	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan struct{})
@@ -169,7 +169,7 @@ func TestHealthCheckStopsOnCancel(t *testing.T) {
 
 func TestHealthCheckProbeIsBounded(t *testing.T) {
 	// A probe to a blackholed address must give up after the timeout.
-	server := New(1, "192.0.2.1", 9, "http")
+	server := NewServer(1, "192.0.2.1", 9, "http")
 
 	start := time.Now()
 	server.checkOnce(context.Background(), 100*time.Millisecond, 0)
@@ -179,7 +179,7 @@ func TestHealthCheckProbeIsBounded(t *testing.T) {
 }
 
 func TestPortFormatting(t *testing.T) {
-	server := New(1, "10.0.0.1", 30554, "https")
+	server := NewServer(1, "10.0.0.1", 30554, "https")
 	if server.Address() != "10.0.0.1:"+strconv.Itoa(30554) {
 		t.Errorf("Address = %q", server.Address())
 	}

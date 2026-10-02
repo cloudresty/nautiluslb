@@ -1,161 +1,168 @@
+// Package backend holds the v2 backend model: an immutable Endpoint produced by
+// discovery, a Backend carrying its lock-free runtime state (health, active
+// connections, ejection hold) and an immutable Snapshot handed to balancers.
+//
+// The v1 BackendServer lives in legacy.go until discovery and tcpproxy are
+// migrated.
 package backend
 
 import (
-	"context"
-	"fmt"
-	"net"
-	"strconv"
+	"net/netip"
 	"sync/atomic"
 	"time"
-
-	"github.com/cloudresty/emit"
 )
 
-// unhealthyThreshold is how many consecutive failed health checks mark a
-// backend unhealthy. A single success marks it healthy again.
-const unhealthyThreshold = 3
-
-// BackendServer represents a backend server.
-//
-// Health and the active connection count are read by every connection
-// handler and written by the health checker concurrently, so they are atomics
-// behind methods rather than plain fields. A BackendServer must therefore not
-// be copied after first use.
-type BackendServer struct {
-	ID       int    `json:"id"`
-	IP       string `json:"ip"`
-	Port     int    `json:"port"`
-	PortName string `json:"port_name"`
-	Weight   int
-
-	healthy           atomic.Bool
-	activeConnections atomic.Int64
+// Endpoint is what discovery produces. It is a comparable value type.
+type Endpoint struct {
+	Address   netip.AddrPort
+	Weight    int // 1..100
+	Namespace string
+	Service   string
+	Node      string // Namespace, Service and Node are for logs only
 }
 
-// New returns a backend that starts out healthy, so traffic flows before the
-// first health check has completed.
-func New(id int, ip string, port int, portName string) *BackendServer {
-	server := &BackendServer{
-		ID:       id,
-		IP:       ip,
-		Port:     port,
-		PortName: portName,
-		Weight:   1,
+// State is the health state of a backend.
+type State uint8
+
+const (
+	Healthy State = iota
+	Unhealthy
+)
+
+// Cause says which mechanism changed a backend's health.
+type Cause uint8
+
+const (
+	CauseProbe   Cause = iota // active health check
+	CausePassive              // passive ejection after a failed dial
+)
+
+// Backend is one dialable endpoint plus its runtime state. All state is held
+// in atomics: it is read on every connection and written by health checkers
+// concurrently. A Backend must not be copied after first use.
+type Backend struct {
+	ep      Endpoint
+	addr    string
+	maxConn int64
+
+	unhealthy    atomic.Bool // zero value = healthy: new backends carry traffic at once
+	cause        atomic.Uint32
+	healthySince atomic.Int64 // unix nanos of the last transition to healthy (creation counts)
+	ejectedUntil atomic.Int64 // unix nanos, 0 = no hold
+	active       atomic.Int64
+}
+
+// New returns a healthy backend. maxConnections <= 0 means unlimited.
+func New(ep Endpoint, maxConnections int) *Backend {
+	if maxConnections < 0 {
+		maxConnections = 0
 	}
-	server.healthy.Store(true)
-	return server
+	b := &Backend{ep: ep, addr: ep.Address.String(), maxConn: int64(maxConnections)}
+	b.healthySince.Store(time.Now().UnixNano())
+	return b
 }
 
-// Address returns the backend's dialable host:port.
-func (server *BackendServer) Address() string {
-	return net.JoinHostPort(server.IP, strconv.Itoa(server.Port))
+// Endpoint returns the endpoint this backend was created from.
+func (b *Backend) Endpoint() Endpoint { return b.ep }
+
+// Address returns "ip:port" (IPv6 as "[ip]:port").
+func (b *Backend) Address() string { return b.addr }
+
+// IsHealthy reports whether the backend is currently healthy.
+func (b *Backend) IsHealthy() bool { return !b.unhealthy.Load() }
+
+// SetHealthy records a health verdict and reports whether it changed the state.
+// The transition time is recorded; a transition to healthy restarts slow-start.
+func (b *Backend) SetHealthy(healthy bool, cause Cause) (changed bool) {
+	if !b.unhealthy.CompareAndSwap(healthy, !healthy) {
+		return false
+	}
+	b.cause.Store(uint32(cause))
+	if healthy {
+		b.healthySince.Store(time.Now().UnixNano())
+		b.ejectedUntil.Store(0)
+	}
+	return true
 }
 
-// IsHealthy reports the backend's current health.
-func (server *BackendServer) IsHealthy() bool {
-	return server.healthy.Load()
+// LastCause returns the cause of the most recent health transition.
+func (b *Backend) LastCause() Cause { return Cause(b.cause.Load()) }
+
+// State returns Healthy or Unhealthy.
+func (b *Backend) State() State {
+	if b.unhealthy.Load() {
+		return Unhealthy
+	}
+	return Healthy
 }
 
-// SetHealthy sets the backend's health and reports whether it changed.
-func (server *BackendServer) SetHealthy(healthy bool) bool {
-	return server.healthy.Swap(healthy) != healthy
+// HealthySince returns when the backend last became healthy (its creation time
+// if it never flipped). Balancers use it for slow-start.
+func (b *Backend) HealthySince() time.Time { return time.Unix(0, b.healthySince.Load()) }
+
+// EjectedUntil returns the end of the passive ejection hold, or the zero time.
+func (b *Backend) EjectedUntil() time.Time {
+	n := b.ejectedUntil.Load()
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
 }
 
-// ActiveConnections returns the number of connections currently proxied to
-// this backend.
-func (server *BackendServer) ActiveConnections() int64 {
-	return server.activeConnections.Load()
+// SetEjectionHold sets the passive ejection hold to now+d. d <= 0 clears it.
+func (b *Backend) SetEjectionHold(d time.Duration) {
+	if d <= 0 {
+		b.ejectedUntil.Store(0)
+		return
+	}
+	b.ejectedUntil.Store(time.Now().Add(d).UnixNano())
 }
 
-// Acquire records a connection proxied to this backend.
-func (server *BackendServer) Acquire() {
-	server.activeConnections.Add(1)
-}
+// ActiveConnections returns the number of connections currently held.
+func (b *Backend) ActiveConnections() int64 { return b.active.Load() }
 
-// Release records the end of a connection proxied to this backend.
-func (server *BackendServer) Release() {
-	server.activeConnections.Add(-1)
-}
+// MaxConnections returns the per-backend cap; 0 means unlimited.
+func (b *Backend) MaxConnections() int { return int(b.maxConn) }
 
-// HealthCheck probes the backend with a TCP connect every interval until ctx
-// is cancelled. Each probe is bounded by timeout and by ctx.
-func (server *BackendServer) HealthCheck(ctx context.Context, interval, timeout time.Duration) {
-
-	failures := 0
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
+// TryAcquire reserves a connection slot. It returns false when the backend is
+// at its cap and never exceeds the cap under concurrency. Every true must be
+// paired with exactly one Release.
+func (b *Backend) TryAcquire() bool {
+	if b.maxConn <= 0 {
+		b.active.Add(1)
+		return true
+	}
 	for {
-
-		failures = server.checkOnce(ctx, timeout, failures)
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
+		cur := b.active.Load()
+		if cur >= b.maxConn {
+			return false
 		}
-
+		if b.active.CompareAndSwap(cur, cur+1) {
+			return true
+		}
 	}
-
 }
 
-// checkOnce runs one probe and returns the updated consecutive-failure count.
-func (server *BackendServer) checkOnce(ctx context.Context, timeout time.Duration, failures int) int {
+// Release frees a slot taken by TryAcquire.
+func (b *Backend) Release() { b.active.Add(-1) }
 
-	probeCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	dialer := net.Dialer{}
-	conn, err := dialer.DialContext(probeCtx, "tcp", server.Address())
-
-	if err != nil {
-
-		// A probe cut short by shutdown says nothing about the backend.
-		if ctx.Err() != nil {
-			return failures
-		}
-
-		failures++
-		emit.Warn.StructuredFields("Backend health check failed",
-			emit.ZString("backend_ip", server.IP),
-			emit.ZInt("backend_port", server.Port),
-			emit.ZInt("attempt", failures),
-			emit.ZString("error", err.Error()))
-
-		if failures >= unhealthyThreshold && server.SetHealthy(false) {
-			emit.Error.StructuredFields("Backend marked as unhealthy",
-				emit.ZString("backend_ip", server.IP),
-				emit.ZInt("backend_port", server.Port),
-				emit.ZString("reason", fmt.Sprintf("%d consecutive failures", failures)))
-		}
-
-		return failures
-
-	}
-
-	if err := conn.Close(); err != nil {
-		emit.Debug.StructuredFields("Failed to close health check connection",
-			emit.ZString("backend_ip", server.IP),
-			emit.ZInt("backend_port", server.Port),
-			emit.ZString("error", err.Error()))
-	}
-
-	if server.SetHealthy(true) {
-		emit.Info.StructuredFields("Backend recovered to healthy",
-			emit.ZString("backend_ip", server.IP),
-			emit.ZInt("backend_port", server.Port))
-	}
-
-	return 0
-
+// Snapshot is an immutable view of a pool's backends. Healthy is the subset of
+// All that was healthy when the snapshot was built; it does not track later
+// health changes (a new Snapshot is built on every change). Never mutate the
+// slices.
+type Snapshot struct {
+	All     []*Backend
+	Healthy []*Backend
 }
 
-func (server *BackendServer) healthStatus() string {
-
-	if server.IsHealthy() {
-		return "healthy"
+// NewSnapshot copies all and derives Healthy from the current health state.
+func NewSnapshot(all []*Backend) *Snapshot {
+	s := &Snapshot{All: append([]*Backend(nil), all...)}
+	s.Healthy = make([]*Backend, 0, len(all))
+	for _, b := range s.All {
+		if b.IsHealthy() {
+			s.Healthy = append(s.Healthy, b)
+		}
 	}
-
-	return "unhealthy"
-
+	return s
 }

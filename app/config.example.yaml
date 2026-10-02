@@ -1,46 +1,111 @@
-# NautilusLB example configuration. Copy to config.yaml (which is git-ignored)
-# and adjust.
+# NautilusLB v2 example configuration. Copy to config.yaml (git-ignored) and adjust.
 #
-# Every Kubernetes Service that NautilusLB should balance to must carry BOTH
-# annotations:
+# A Kubernetes Service joins a pool only when it carries BOTH annotations:
 #
 #   nautiluslb.cloudresty.io/enabled: "true"
-#   nautiluslb.cloudresty.io/configurations: "<name>[,<name>...]"
+#   nautiluslb.cloudresty.io/configurations: "<config>[,<config>/<route>...]"
 #
-# where <name> is the `name` of one or more configurations below. A Service
-# only joins the pools of the configurations it names.
+# <config> is a configuration `name` below; "<config>/<route>" targets one SNI
+# route of a tls configuration. Optional: nautiluslb.cloudresty.io/weight: "1".."100".
 #
-# Unknown keys are rejected at startup, so typos fail fast instead of being
-# silently ignored.
+# Unknown keys are rejected at startup. Durations are strings ("30s", "5m").
+# Upgrading from v1: see docs/upgrading-v2.md.
+apiVersion: nautiluslb.cloudresty.io/v2
+kind: Config
 
 settings:
-  # Path to a kubeconfig file. Leave empty to use in-cluster configuration.
-  kubeconfigPath: ""
+  logLevel: info                  # debug | info | warn | error        (NLB_LOG_LEVEL)
+  kubernetes:
+    kubeconfig: ""                # "" = in-cluster, then $KUBECONFIG   (NLB_KUBECONFIG)
+    qps: 20
+    burst: 40
+  discovery:
+    resyncPeriod: 5m
+    debounce: 200ms
+    nodes:
+      readyOnly: true             # drop NotReady nodes
+      skipUnschedulable: true     # drop cordoned nodes
+      skipControlPlane: false
+      addressFamily: ipv4         # ipv4 | ipv6 | prefer-ipv4 | prefer-ipv6
+  admin:
+    address: "127.0.0.1:9090"     # /metrics /healthz /readyz; "" disables (NLB_ADMIN_ADDRESS)
+    pprof: false                  # NLB_PPROF
+    metrics:
+      perBackend: true
+  accessLog:
+    enabled: true                 # NLB_ACCESS_LOG_ENABLED
+    output: stdout                # stdout | stderr | /absolute/path
+    bufferSize: 4096
+  limits:
+    maxConnections: 0             # process-wide, 0 = unlimited (NLB_MAX_CONNECTIONS)
+  drain:
+    readinessDelay: 3s
+    timeout: 30s                  # NLB_DRAIN_TIMEOUT
+  reload:
+    watchFile: false
 
 configurations:
-  # Unique name: letters, digits, '.', '_' or '-'; max 63 chars.
-  - name: http_traffic_configuration
-    # ":port" listens on all interfaces; "<ip>:port" binds one address.
-    # Listener addresses must not overlap (":80" conflicts with "10.0.0.1:80").
-    listenerAddress: ":80"
-    # Name of the Service port to forward to.
-    backendPortName: http
-    # Namespaces searched for Services (at least one is required).
-    # Use ["*"] to discover Services cluster-wide; it cannot be combined
-    # with other entries.
-    namespaces:
-      - ingress-nginx
-
-  - name: https_traffic_configuration
+  # TLS passthrough with SNI routing; the TLS session is never terminated.
+  - name: https
+    protocol: tls
     listenerAddress: ":443"
+    namespaces: [ingress-nginx, apps]
     backendPortName: https
-    namespaces:
-      - ingress-nginx
+    balancer:
+      algorithm: round_robin      # round_robin | least_conn | source_ip_hash | random_two_choices
+      slowStart: 30s
+    health:
+      type: tcp
+      interval: 10s
+      timeout: 2s
+    limits:
+      maxConnectionsPerSource: 200
+    access:
+      deny: ["192.0.2.0/24"]
+    proxyProtocol:
+      out: ""                     # "" | v1 | v2
+    tls:
+      peekTimeout: 5s
+      maxClientHello: 16384
+      defaultRoute: web
+      routes:
+        - name: web               # annotation entry "https/web"
+          hosts: ["example.com", "*.example.com"]
+          balancer: {algorithm: least_conn}
+        - name: api               # annotation entry "https/api"
+          hosts: ["api.example.com"]
+          backendPortName: api-https
 
-  - name: mongodb_configuration
+  # Plain HTTP with an HTTP health probe.
+  - name: http
+    listenerAddress: ":80"
+    namespaces: [ingress-nginx]
+    backendPortName: http
+    health:
+      type: http
+      http:
+        path: /healthz
+        expectStatus: [200, 204]
+
+  - name: mongodb
     listenerAddress: ":27017"
+    namespaces: [databases]
     backendPortName: mongodb
-    namespaces:
-      - databases
-    # Backend request timeout in seconds; 0 or omitted uses the default.
-    requestTimeout: 5
+    balancer:
+      algorithm: least_conn
+    limits:
+      maxConnectionsPerBackend: 500
+    dialTimeout: 5s
+    idleTimeout: 0                # 0 = none
+
+  # UDP: passive ejection only by default (health type none).
+  - name: dns
+    protocol: udp
+    listenerAddress: ":53"
+    namespaces: [dns]
+    backendPortName: dns-udp      # Service port must be protocol UDP
+    udp:
+      sessionIdleTimeout: 60s
+      maxSessions: 0
+      maxSessionsPerSource: 0
+      bufferSize: 65535

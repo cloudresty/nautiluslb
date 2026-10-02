@@ -7,86 +7,136 @@ import (
 	"io"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/cloudresty/emit"
 	"go.yaml.in/yaml/v3"
 )
 
-//
-// parseConfig strictly decodes and validates a single-document YAML configuration.
-//
+// UnmarshalYAML seeds the health jitter default (0.2) so that an explicit
+// jitter: 0 is distinguishable from an absent key. It uses the callback form
+// so strict (KnownFields) decoding keeps applying to the nested fields.
+func (c *Configuration) UnmarshalYAML(unmarshal func(any) error) error {
+	type plain Configuration // no methods: avoids recursion
+	p := plain{}
+	p.Health.Jitter = 0.2
+	p.seeded = true
+	if err := unmarshal(&p); err != nil {
+		return err
+	}
+	*c = Configuration(p)
+	return nil
+}
 
-func parseConfig(filename string, data []byte) (Config, error) {
-
-	var configData Config
+// Parse strictly decodes a single-document YAML configuration. It does not
+// apply defaults, read the environment or validate; see Load.
+func Parse(name string, data []byte) (*Config, error) {
+	cfg := &Config{}
+	cfg.seedBools()
 
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 
-	if err := dec.Decode(&configData); err != nil {
-
+	if err := dec.Decode(cfg); err != nil {
 		if errors.Is(err, io.EOF) {
-			return Config{}, fmt.Errorf("parsing %s: file is empty", filename)
+			return nil, fmt.Errorf("parsing %s: file is empty", name)
 		}
-
-		return Config{}, fmt.Errorf("parsing %s: %w", filename, err)
-
+		return nil, fmt.Errorf("parsing %s: %w", name, err)
 	}
 
 	// Refuse a second document: it would be silently ignored otherwise
 	var extra yaml.Node
 	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
-
 		if err == nil {
-			return Config{}, fmt.Errorf("parsing %s: multiple YAML documents are not supported", filename)
+			return nil, fmt.Errorf("parsing %s: multiple YAML documents are not supported", name)
 		}
-
-		return Config{}, fmt.Errorf("parsing %s: %w", filename, err)
-
+		return nil, fmt.Errorf("parsing %s: %w", name, err)
 	}
 
-	if err := configData.Validate(); err != nil {
-		return Config{}, fmt.Errorf("invalid configuration in %s: %w", filename, err)
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err == nil {
+		scanBareDurations(&root, "", &cfg.parseWarning)
 	}
 
-	return configData, nil
-
+	return cfg, nil
 }
 
-//
-// Load reads the configuration from a YAML file and returns a Config struct.
-//
+// durationKeys are the YAML keys whose value is a Duration.
+var durationKeys = map[string]bool{
+	"resyncPeriod": true, "debounce": true, "readinessDelay": true, "timeout": true,
+	"ejectionHold": true, "slowStart": true, "dialTimeout": true, "idleTimeout": true,
+	"peekTimeout": true, "sessionIdleTimeout": true, "interval": true,
+}
 
-func Load(filename string) (Config, error) {
+// scanBareDurations records a deprecation for every duration key written as a
+// bare integer (v1 style seconds).
+func scanBareDurations(n *yaml.Node, path string, out *[]string) {
+	switch n.Kind {
+	case yaml.DocumentNode:
+		for _, c := range n.Content {
+			scanBareDurations(c, path, out)
+		}
+	case yaml.SequenceNode:
+		for i, c := range n.Content {
+			scanBareDurations(c, path+"["+strconv.Itoa(i)+"]", out)
+		}
+	case yaml.MappingNode:
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			k, v := n.Content[i], n.Content[i+1]
+			p := k.Value
+			if path != "" {
+				p = path + "." + k.Value
+			}
+			if durationKeys[k.Value] && v.Kind == yaml.ScalarNode && v.ShortTag() == "!!int" && v.Value != "0" {
+				*out = append(*out, fmt.Sprintf("%s: bare integer duration %s (seconds) is deprecated: write %q", p, v.Value, v.Value+"s"))
+				continue
+			}
+			scanBareDurations(v, p, out)
+		}
+	}
+}
 
-	// Read the YAML file (config.yaml)
-	data, err := os.ReadFile(filename)
+// Load reads the configuration file, applies defaults and NLB_* environment
+// overrides, validates it and logs its deprecations.
+func Load(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return Config{}, err
+		return nil, err
 	}
 
-	configData, err := parseConfig(filename, data)
+	cfg, err := Parse(path, data)
 	if err != nil {
-		return Config{}, err
+		return nil, err
 	}
 
-	for _, bc := range configData.BackendConfigurations {
+	cfg.ApplyDefaults()
 
+	if err := cfg.ApplyEnv(os.LookupEnv); err != nil {
+		return nil, fmt.Errorf("invalid environment for %s: %w", path, err)
+	}
+
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid configuration in %s: %w", path, err)
+	}
+
+	for _, d := range cfg.Deprecations() {
+		emit.Warn.StructuredFields("Deprecated configuration", emit.ZString("detail", d))
+	}
+
+	for _, bc := range cfg.Configurations {
 		namespaces := strings.Join(bc.DiscoveryNamespaces(), ",")
 		if namespaces == "" {
 			namespaces = AllNamespaces
 		}
-
 		emit.Info.StructuredFields("Loaded configuration",
 			emit.ZString("config_name", bc.Name),
+			emit.ZString("protocol", string(bc.Protocol)),
 			emit.ZString("listener_port", listenerPort(bc.ListenerAddress)),
 			emit.ZString("namespaces", namespaces))
-
 	}
 
-	return configData, nil
-
+	return cfg, nil
 }
 
 // listenerPort returns the port of a host:port listener address, for logging.

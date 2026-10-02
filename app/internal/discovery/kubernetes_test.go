@@ -527,7 +527,7 @@ func TestDiscoverOnceFailedListLeavesOnlyAffectedConfig(t *testing.T) {
 		return false, nil, nil
 	})
 
-	known := backend.New(1, "10.0.0.9", 30009, "https")
+	known := backend.NewServer(1, "10.0.0.9", 30009, "https")
 	lbs := lbFor(multi, other)
 	lbs["multi"].(*fakeLB).servers = []*backend.BackendServer{known}
 
@@ -554,7 +554,7 @@ func TestDiscoverOnceKeepsBackendsWhenTheAPIFails(t *testing.T) {
 				return true, nil, errors.New("Unauthorized")
 			})
 
-			known := backend.New(1, "10.0.0.9", 30742, "https")
+			known := backend.NewServer(1, "10.0.0.9", 30742, "https")
 			lb := &fakeLB{servers: []*backend.BackendServer{known}}
 
 			discoverOnce(context.Background(), client, []config.Configuration{cfg},

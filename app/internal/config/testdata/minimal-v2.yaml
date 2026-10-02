@@ -1,0 +1,7 @@
+apiVersion: nautiluslb.cloudresty.io/v2
+kind: Config
+configurations:
+  - name: web
+    listenerAddress: ":8080"
+    backendPortName: http
+    namespaces: [default]

@@ -1,0 +1,13 @@
+settings:
+  kubeconfigPath: ""
+configurations:
+  - name: http_traffic_configuration
+    listenerAddress: ":80"
+    backendPortName: http
+    namespaces:
+      - ingress-nginx
+  - name: mongodb_configuration
+    listenerAddress: ":27017"
+    backendPortName: mongodb
+    namespace: databases
+    requestTimeout: 5

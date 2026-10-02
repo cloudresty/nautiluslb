@@ -1,297 +1,233 @@
+// Package config loads, defaults and validates the NautilusLB v2 configuration.
+//
+// Pipeline: Load = read + Parse (strict) + ApplyDefaults + ApplyEnv + Validate.
+//
+// Defaults that are true (settings.discovery.nodes.readyOnly,
+// skipUnschedulable, settings.accessLog.enabled, settings.admin.metrics.perBackend,
+// and health.jitter 0.2) must stay distinguishable from an explicit false/0, so
+// the public fields are plain bool/float64 and Parse pre-seeds them before
+// decoding: an absent key keeps the default, an explicit value overrides it.
+// For a hand-built Config (never parsed) ApplyDefaults seeds them the first time
+// it runs, tracked by an unexported marker; set an explicit false after
+// ApplyDefaults. Per-route health overrides cannot express jitter 0 (zero
+// inherits the configuration's value).
 package config
 
 import (
-	"errors"
-	"fmt"
-	"net"
 	"regexp"
-	"sort"
-	"strconv"
-	"strings"
-
-	"k8s.io/apimachinery/pkg/util/validation"
+	"time"
 )
 
-// namePattern restricts configuration names: they are referenced inside a
-// comma-separated annotation, so commas and spaces must be impossible.
+const (
+	APIVersion = "nautiluslb.cloudresty.io/v2"
+	Kind       = "Config"
+
+	// ServiceEnabledAnnotation marks a Service as a NautilusLB backend.
+	ServiceEnabledAnnotation = "nautiluslb.cloudresty.io/enabled"
+	// ServiceConfigurationsAnnotation binds a Service to configurations by name
+	// (or "<config>/<route>" for an SNI route), comma-separated. A Service is a
+	// backend only when it names the configuration here: matching on port name
+	// alone would let any annotated Service join a listener's pool.
+	ServiceConfigurationsAnnotation = "nautiluslb.cloudresty.io/configurations"
+	// ServiceWeightAnnotation sets the weight (1..100, default 1) of a Service's endpoints.
+	ServiceWeightAnnotation = "nautiluslb.cloudresty.io/weight"
+	// AllNamespaces in Namespaces opts a configuration into cluster-wide
+	// discovery. It must be the only entry.
+	AllNamespaces = "*"
+
+	// MaxDialTimeout caps Configuration.DialTimeout (see EffectiveDialTimeout).
+	MaxDialTimeout = 10 * time.Second
+)
+
+// namePattern restricts configuration and route names: they are referenced
+// inside a comma-separated annotation, so commas, spaces and '/' are impossible.
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9._-]{0,61}[A-Za-z0-9])?$`)
 
-// Config represents the overall configuration for the SLB.
+type Protocol string
+
+const (
+	ProtocolTCP Protocol = "tcp"
+	ProtocolUDP Protocol = "udp"
+	ProtocolTLS Protocol = "tls"
+)
+
+// Config is the whole configuration file.
 type Config struct {
-	Settings struct {
-		KubeconfigPath string `yaml:"kubeconfigPath"`
-	} `yaml:"settings"`
-	BackendConfigurations []Configuration `yaml:"configurations"`
+	APIVersion     string          `yaml:"apiVersion"`
+	Kind           string          `yaml:"kind"`
+	Settings       Settings        `yaml:"settings"`
+	Configurations []Configuration `yaml:"configurations"`
+
+	seeded       bool     // true-valued bool defaults already applied/seeded
+	parseWarning []string // deprecations found while parsing (bare-int durations)
 }
 
-// ServiceEnabledAnnotation marks a Service as a NautilusLB backend.
-const ServiceEnabledAnnotation = "nautiluslb.cloudresty.io/enabled"
+type Settings struct {
+	LogLevel   string             `yaml:"logLevel"`
+	Kubernetes KubernetesSettings `yaml:"kubernetes"`
+	Discovery  DiscoverySettings  `yaml:"discovery"`
+	Admin      AdminSettings      `yaml:"admin"`
+	AccessLog  AccessLogSettings  `yaml:"accessLog"`
+	Limits     GlobalLimits       `yaml:"limits"`
+	Drain      DrainSettings      `yaml:"drain"`
+	Reload     ReloadSettings     `yaml:"reload"`
 
-// ServiceConfigurationsAnnotation binds a Service to configurations by name,
-// as a comma-separated list. A Service is a backend of a configuration only
-// when it names it here: matching on the port name alone would let any
-// annotated Service with a port called "https" join that listener's pool.
-const ServiceConfigurationsAnnotation = "nautiluslb.cloudresty.io/configurations"
+	// Deprecated v1 alias for Kubernetes.Kubeconfig.
+	KubeconfigPath string `yaml:"kubeconfigPath,omitempty"`
+}
 
-// AllNamespaces in Namespaces opts a configuration into cluster-wide
-// discovery. It must be the only entry.
-const AllNamespaces = "*"
+type KubernetesSettings struct {
+	Kubeconfig string  `yaml:"kubeconfig"`
+	QPS        float32 `yaml:"qps"`
+	Burst      int     `yaml:"burst"`
+	UserAgent  string  `yaml:"userAgent"`
+}
 
-// Configuration represents the configuration for a backend.
+type DiscoverySettings struct {
+	ResyncPeriod Duration   `yaml:"resyncPeriod"`
+	Debounce     Duration   `yaml:"debounce"`
+	Nodes        NodeFilter `yaml:"nodes"`
+}
+
+type NodeFilter struct {
+	ReadyOnly         bool              `yaml:"readyOnly"`
+	SkipUnschedulable bool              `yaml:"skipUnschedulable"`
+	SkipControlPlane  bool              `yaml:"skipControlPlane"`
+	AddressFamily     string            `yaml:"addressFamily"`
+	Selector          map[string]string `yaml:"selector"`
+}
+
+type AdminMetrics struct {
+	PerBackend bool `yaml:"perBackend"`
+}
+
+type AdminSettings struct {
+	Address string       `yaml:"address"`
+	Pprof   bool         `yaml:"pprof"`
+	Metrics AdminMetrics `yaml:"metrics"`
+}
+
+type AccessLogSettings struct {
+	Enabled    bool   `yaml:"enabled"`
+	Output     string `yaml:"output"`
+	BufferSize int    `yaml:"bufferSize"`
+}
+
+type GlobalLimits struct {
+	MaxConnections int `yaml:"maxConnections"`
+}
+
+type DrainSettings struct {
+	ReadinessDelay Duration `yaml:"readinessDelay"`
+	Timeout        Duration `yaml:"timeout"`
+}
+
+type ReloadSettings struct {
+	WatchFile bool `yaml:"watchFile"`
+}
+
+// Configuration is one listener (tcp/udp) or one SNI-routing listener (tls).
 type Configuration struct {
-	Name            string `yaml:"name"`
-	ListenerAddress string `yaml:"listenerAddress"`
-	RequestTimeout  int    `yaml:"requestTimeout,omitempty"`
-	BackendPortName string `yaml:"backendPortName"`
+	Name            string         `yaml:"name"`
+	Protocol        Protocol       `yaml:"protocol"`
+	ListenerAddress string         `yaml:"listenerAddress"`
+	Namespaces      []string       `yaml:"namespaces"`
+	Namespace       string         `yaml:"namespace,omitempty"` // deprecated alias, merged with Namespaces
+	BackendPortName string         `yaml:"backendPortName"`
+	Balancer        Balancer       `yaml:"balancer"`
+	Health          Health         `yaml:"health"`
+	Limits          ListenerLimits `yaml:"limits"`
+	Access          Access         `yaml:"access"`
+	ProxyProtocol   ProxyProtocol  `yaml:"proxyProtocol"`
+	DialTimeout     Duration       `yaml:"dialTimeout"`
+	RequestTimeout  int            `yaml:"requestTimeout,omitempty"` // deprecated alias (seconds) -> DialTimeout
+	IdleTimeout     Duration       `yaml:"idleTimeout"`
+	TLS             *TLS           `yaml:"tls,omitempty"`
+	UDP             *UDP           `yaml:"udp,omitempty"`
 
-	// Namespace is the single-namespace form, kept for existing configs.
-	// It is merged with Namespaces.
-	Namespace string `yaml:"namespace,omitempty"`
-
-	// Namespaces is the allowlist of namespaces searched for Services.
-	// At least one namespace (or AllNamespaces) is required: an empty list
-	// is refused rather than read as cluster-wide.
-	Namespaces []string `yaml:"namespaces,omitempty"`
+	seeded bool // jitter default already seeded/applied
 }
 
-// DiscoveryNamespaces returns the namespaces to list Services in: Namespace
-// and Namespaces merged, deduplicated and sorted. Cluster-wide discovery is
-// returned as a single metav1.NamespaceAll (""). Call it only on a validated
-// configuration.
-func (bc *Configuration) DiscoveryNamespaces() []string {
-	seen := make(map[string]bool)
-	var namespaces []string
-	for _, ns := range append([]string{bc.Namespace}, bc.Namespaces...) {
-		ns = strings.TrimSpace(ns)
-		if ns == "" || seen[ns] {
-			continue
-		}
-		if ns == AllNamespaces {
-			return []string{""}
-		}
-		seen[ns] = true
-		namespaces = append(namespaces, ns)
-	}
-	sort.Strings(namespaces)
-	return namespaces
+type Balancer struct {
+	Algorithm string   `yaml:"algorithm"`
+	SlowStart Duration `yaml:"slowStart"`
 }
 
-// Validate validates the backend configuration, reporting every problem found.
-func (bc *Configuration) Validate() error {
-
-	return errors.Join(bc.problems()...)
-
+type Health struct {
+	Type         string    `yaml:"type"`
+	Interval     Duration  `yaml:"interval"`
+	Timeout      Duration  `yaml:"timeout"`
+	EjectionHold Duration  `yaml:"ejectionHold"`
+	Rise         int       `yaml:"rise"`
+	Fall         int       `yaml:"fall"`
+	Jitter       float64   `yaml:"jitter"`
+	Port         int       `yaml:"port"`
+	HTTP         HTTPProbe `yaml:"http"`
 }
 
-// problems collects every validation failure of a single configuration.
-func (bc *Configuration) problems() []error {
-
-	var errs []error
-
-	if bc.Name == "" {
-		errs = append(errs, errors.New("'name' cannot be empty"))
-	} else if !namePattern.MatchString(bc.Name) {
-		errs = append(errs, fmt.Errorf("invalid name %q: must match %s (it is referenced in a comma-separated annotation)", bc.Name, namePattern))
-	}
-
-	if _, _, err := parseListenerAddress(bc.ListenerAddress); err != nil {
-		errs = append(errs, err)
-	}
-
-	if bc.BackendPortName == "" {
-		errs = append(errs, errors.New("'backendPortName' cannot be empty"))
-	} else if msgs := validation.IsValidPortName(bc.BackendPortName); len(msgs) > 0 {
-		errs = append(errs, fmt.Errorf("invalid backendPortName %q: %s", bc.BackendPortName, strings.Join(msgs, "; ")))
-	}
-
-	if bc.RequestTimeout < 0 {
-		errs = append(errs, fmt.Errorf("invalid requestTimeout %d: must be >= 0 (0 uses the default)", bc.RequestTimeout))
-	}
-
-	errs = append(errs, bc.namespaceProblems()...)
-
-	return errs
-
+type HTTPProbe struct {
+	Path         string `yaml:"path"`
+	Host         string `yaml:"host"`
+	ExpectStatus []int  `yaml:"expectStatus"`
 }
 
-// namespaceProblems validates the merged Namespace and Namespaces entries.
-func (bc *Configuration) namespaceProblems() []error {
-
-	var errs []error
-
-	entries := make([]string, 0, len(bc.Namespaces)+1)
-	if bc.Namespace != "" {
-		entries = append(entries, bc.Namespace)
-	}
-
-	for _, ns := range bc.Namespaces {
-		if ns == "" {
-			errs = append(errs, errors.New("invalid namespaces: entries must not be empty"))
-			continue
-		}
-		entries = append(entries, ns)
-	}
-
-	if len(entries) == 0 && len(errs) == 0 {
-		return []error{errors.New(`no namespaces configured: set "namespaces: [<namespace>]", or "namespaces: [\"*\"]" to discover Services cluster-wide`)}
-	}
-
-	hasAll := false
-	others := 0
-
-	for _, ns := range entries {
-		if ns == AllNamespaces {
-			hasAll = true
-			continue
-		}
-		others++
-		if msgs := validation.IsDNS1123Label(ns); len(msgs) > 0 {
-			errs = append(errs, fmt.Errorf("invalid namespace %q: %s", ns, strings.Join(msgs, "; ")))
-		}
-	}
-
-	if hasAll && others > 0 {
-		errs = append(errs, fmt.Errorf("invalid namespaces: %q must be the only entry, it cannot be combined with other namespaces", AllNamespaces))
-	}
-
-	return errs
-
+type ListenerLimits struct {
+	MaxConnections           int `yaml:"maxConnections"`
+	MaxConnectionsPerSource  int `yaml:"maxConnectionsPerSource"`
+	MaxConnectionsPerBackend int `yaml:"maxConnectionsPerBackend"`
 }
 
-// parseListenerAddress splits and validates a listenerAddress, returning its
-// host (possibly empty) and port.
-func parseListenerAddress(addr string) (string, int, error) {
-
-	if addr == "" {
-		return "", 0, errors.New("'listenerAddress' cannot be empty")
-	}
-
-	host, portStr, err := net.SplitHostPort(addr)
-	if err != nil {
-		return "", 0, fmt.Errorf("invalid listenerAddress %q: %w (write the port as \":8080\" or \"<ip>:8080\")", addr, err)
-	}
-
-	port, err := strconv.ParseUint(portStr, 10, 32)
-	if err != nil || port < 1 || port > 65535 {
-		return "", 0, fmt.Errorf("invalid listenerAddress %q: port %q must be a number between 1 and 65535", addr, portStr)
-	}
-
-	if host != "" && net.ParseIP(host) == nil {
-		return "", 0, fmt.Errorf("invalid listenerAddress %q: host %q must be empty or an IP address", addr, host)
-	}
-
-	return host, int(port), nil
-
+type Access struct {
+	Allow []string `yaml:"allow"`
+	Deny  []string `yaml:"deny"`
 }
 
-// isWildcardHost reports whether a listener host binds every address.
-func isWildcardHost(host string) bool {
-
-	if host == "" {
-		return true
-	}
-
-	ip := net.ParseIP(host)
-
-	return ip != nil && ip.IsUnspecified()
-
+type ProxyProtocolIn struct {
+	TrustedCIDRs []string `yaml:"trustedCIDRs"`
+	Required     bool     `yaml:"required"`
 }
 
-// listenersConflict reports whether two listener addresses cannot be bound
-// together: same port and the same host, or either host is a wildcard.
-func listenersConflict(hostA string, portA int, hostB string, portB int) bool {
-
-	if portA != portB {
-		return false
-	}
-
-	if isWildcardHost(hostA) || isWildcardHost(hostB) {
-		return true
-	}
-
-	return net.ParseIP(hostA).Equal(net.ParseIP(hostB))
-
+type ProxyProtocol struct {
+	In  ProxyProtocolIn `yaml:"in"`
+	Out string          `yaml:"out"`
 }
 
-// Validate validates the whole configuration, running every configuration's
-// checks plus the cross-configuration ones, and reports all problems at once.
-func (c *Config) Validate() error {
-
-	if len(c.BackendConfigurations) == 0 {
-		return errors.New("no configurations defined: 'configurations' must contain at least one entry")
-	}
-
-	var errs []error
-
-	prefix := func(i int) string {
-		return fmt.Sprintf("configurations[%d] (%s)", i, c.BackendConfigurations[i].Name)
-	}
-
-	names := make(map[string]int)
-
-	type listener struct {
-		host string
-		port int
-	}
-	listeners := make(map[int]listener)
-
-	for i := range c.BackendConfigurations {
-
-		bc := &c.BackendConfigurations[i]
-
-		for _, err := range bc.problems() {
-			errs = append(errs, fmt.Errorf("%s: %w", prefix(i), err))
-		}
-
-		if bc.Name != "" {
-			if first, ok := names[bc.Name]; ok {
-				errs = append(errs, fmt.Errorf("%s: duplicate name, already used by configurations[%d]", prefix(i), first))
-			} else {
-				names[bc.Name] = i
-			}
-		}
-
-		host, port, err := parseListenerAddress(bc.ListenerAddress)
-		if err != nil {
-			continue
-		}
-
-		for j := 0; j < i; j++ {
-
-			other := listeners[j]
-			if other.port == 0 {
-				continue
-			}
-
-			if listenersConflict(host, port, other.host, other.port) {
-				errs = append(errs, fmt.Errorf("%s: listenerAddress %q conflicts with configurations[%d] (%s) listenerAddress %q",
-					prefix(i), bc.ListenerAddress, j, c.BackendConfigurations[j].Name, c.BackendConfigurations[j].ListenerAddress))
-				break
-			}
-
-		}
-
-		listeners[i] = listener{host: host, port: port}
-
-	}
-
-	return errors.Join(errs...)
-
+type TLS struct {
+	PeekTimeout    Duration `yaml:"peekTimeout"`
+	MaxClientHello int      `yaml:"maxClientHello"`
+	DefaultRoute   string   `yaml:"defaultRoute"`
+	Routes         []Route  `yaml:"routes"`
 }
 
-// GetListenerPort extracts the port number from ListenerAddress
-func (bc *Configuration) GetListenerPort() (int, error) {
+// Route is one SNI route. Balancer, Health and Limits are optional overrides
+// merged field-wise over the configuration's (zero values inherit).
+type Route struct {
+	Name            string          `yaml:"name"`
+	Hosts           []string        `yaml:"hosts"`
+	BackendPortName string          `yaml:"backendPortName"`
+	Balancer        *Balancer       `yaml:"balancer,omitempty"`
+	Health          *Health         `yaml:"health,omitempty"`
+	Limits          *ListenerLimits `yaml:"limits,omitempty"`
+}
 
-	_, port, err := net.SplitHostPort(strings.TrimSpace(bc.ListenerAddress))
-	if err != nil {
-		return 0, fmt.Errorf("invalid listenerAddress '%s': %w", bc.ListenerAddress, err)
-	}
+type UDP struct {
+	SessionIdleTimeout   Duration `yaml:"sessionIdleTimeout"`
+	MaxSessions          int      `yaml:"maxSessions"`
+	MaxSessionsPerSource int      `yaml:"maxSessionsPerSource"`
+	BufferSize           int      `yaml:"bufferSize"`
+}
 
-	n, err := strconv.Atoi(port)
-	if err != nil {
-		return 0, fmt.Errorf("invalid listenerAddress '%s': %w", bc.ListenerAddress, err)
-	}
-
-	return n, nil
-
+// PoolSpec describes one backend pool. Key is "<name>" for tcp/udp and
+// "<name>/<route>" for tls routes. Namespaces is DiscoveryNamespaces() of the
+// owning configuration ([""] = cluster-wide).
+type PoolSpec struct {
+	Key                      string
+	ConfigName               string
+	Route                    string
+	BackendPortName          string
+	Protocol                 Protocol
+	Balancer                 Balancer
+	Health                   Health
+	MaxConnectionsPerBackend int
+	Namespaces               []string
 }
