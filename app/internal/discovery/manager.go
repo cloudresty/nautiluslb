@@ -48,6 +48,8 @@ type Options struct {
 	Settings config.DiscoverySettings
 	Recorder metrics.Recorder
 	Sink     Sink
+	// SyncTimeout is how long Start waits for the first sync; 0 means 60s.
+	SyncTimeout time.Duration
 }
 
 // nsFactory is the informer set of one namespace ("" = cluster-wide).
@@ -75,6 +77,11 @@ type Manager struct {
 	syncTimeout time.Duration
 
 	trigger chan struct{}
+
+	// syncedCh is closed (once, by syncOnce) the first time every store the
+	// current specs need has synced and a reconcile has applied it.
+	syncedCh   chan struct{}
+	syncedOnce sync.Once
 
 	mu      sync.Mutex
 	started bool
@@ -105,16 +112,31 @@ func NewManager(client kubernetes.Interface, opts Options) *Manager {
 	if opts.Recorder == nil {
 		opts.Recorder = metrics.NewNop()
 	}
+	timeout := opts.SyncTimeout
+	if timeout <= 0 {
+		timeout = defaultSyncTimeout
+	}
 	return &Manager{
 		client:      client,
 		opts:        opts,
 		warned:      newWarnTracker(),
-		syncTimeout: defaultSyncTimeout,
+		syncTimeout: timeout,
+		syncedCh:    make(chan struct{}),
 		trigger:     make(chan struct{}, 1),
 		facs:        make(map[string]*nsFactory),
 		applied:     make(map[string][]backend.Endpoint),
 	}
 }
+
+// Synced returns a channel closed, once, when every store the current specs
+// need has synced for the first time and a reconcile has applied it. It is
+// closed by Start's wait or by the first later reconcile that sees everything
+// synced, so it also fires after Start returned ErrNotSynced. It is never
+// re-opened: a later Rebind that adds a not-yet-synced namespace does not
+// un-close it.
+func (m *Manager) Synced() <-chan struct{} { return m.syncedCh }
+
+func (m *Manager) markSynced() { m.syncedOnce.Do(func() { close(m.syncedCh) }) }
 
 // signal requests a reconcile; requests made while one is pending coalesce.
 func (m *Manager) signal() {
@@ -256,6 +278,7 @@ func (m *Manager) Start(ctx context.Context, specs []config.PoolSpec) error {
 		}
 	}
 	m.reconcile()
+	m.markSynced()
 	return nil
 }
 
@@ -303,6 +326,14 @@ func (m *Manager) Rebind(specs []config.PoolSpec) error {
 		}
 		added[ns] = f
 	}
+	oldKeys := make(map[string]bool, len(m.specs))
+	for _, sp := range m.specs {
+		oldKeys[sp.Key] = true
+	}
+	newKeys := make(map[string]bool, len(specs))
+	for _, sp := range specs {
+		newKeys[sp.Key] = true
+	}
 	m.specs = slices.Clone(specs)
 	maps.Copy(m.facs, added)
 	var removed []*nsFactory
@@ -313,6 +344,23 @@ func (m *Manager) Rebind(specs []config.PoolSpec) error {
 		}
 	}
 	m.mu.Unlock()
+
+	// Forget what was last sent for keys that vanished or are new, so a key
+	// removed and re-added within one debounce window (the pool object is new)
+	// is always sent again. Done after the specs swap, under recMu, so a
+	// reconcile cannot re-record a stale entry for it.
+	m.recMu.Lock()
+	for k := range m.applied {
+		if !newKeys[k] {
+			delete(m.applied, k)
+		}
+	}
+	for k := range newKeys {
+		if !oldKeys[k] {
+			delete(m.applied, k)
+		}
+	}
+	m.recMu.Unlock()
 
 	for _, f := range removed {
 		f.cancel()
@@ -522,6 +570,9 @@ func (m *Manager) reconcile() {
 		}
 	}
 	m.warned.endPass(allSynced)
+	if allSynced {
+		m.markSynced()
+	}
 
 	result := "unchanged"
 	switch {

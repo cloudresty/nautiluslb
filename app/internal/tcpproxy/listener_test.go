@@ -371,3 +371,30 @@ func TestDialFailedIsRejectedNotClosed(t *testing.T) {
 		t.Errorf("accepted=%d closed=%d active=%d, want 1/0/0", h.rec.accepted, closed, h.rec.active)
 	}
 }
+
+func TestDrainForcedMetric(t *testing.T) {
+	h := startTP(t, tpConfig(), poolsOf(newFakePool("test", nb(t, tpEcho(t)))), nil)
+	conn, err := net.Dial("tcp", h.addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := conn.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if forced := h.l.Drain(ctx); forced != 1 {
+		t.Fatalf("forced = %d, want 1", forced)
+	}
+	h.rec.mu.Lock()
+	defer h.rec.mu.Unlock()
+	if len(h.rec.drained) != 1 || h.rec.drained[0] != 1 {
+		t.Fatalf("DrainForced calls = %v, want [1]", h.rec.drained)
+	}
+}

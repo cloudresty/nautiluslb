@@ -1,0 +1,54 @@
+{{- $fullname := include "nautiluslb.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $listeners := include "nautiluslb.listeners" . | fromJsonArray -}}
+NautilusLB {{ .Chart.AppVersion }} is installed as a {{ .Values.mode }} ({{ $fullname }}) in namespace {{ $ns }}.
+
+1. Wait for readiness (/readyz is 503 until discovery has synced):
+
+   kubectl -n {{ $ns }} rollout status {{ lower .Values.mode }}/{{ $fullname }}
+   kubectl -n {{ $ns }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -o wide
+
+2. Check health and metrics on the admin port ({{ .Values.admin.port }}; pprof is {{ if (((.Values.config.settings | default dict).admin | default dict).pprof) }}ON{{ else }}off{{ end }}):
+
+   kubectl -n {{ $ns }} port-forward {{ lower .Values.mode }}/{{ $fullname }} {{ .Values.admin.port }}:{{ .Values.admin.port }}
+   curl -s localhost:{{ .Values.admin.port }}/readyz
+   curl -s localhost:{{ .Values.admin.port }}/metrics | grep -E '^nautiluslb_(ready|pool_backends|backend_healthy)'
+
+3. Bind a backend Service. It must be type NodePort or LoadBalancer, live in a
+   namespace the configuration allows, carry BOTH annotations and name its port
+   as the configuration's backendPortName:
+
+{{- range .Values.config.configurations }}
+   - {{ .name }} ({{ .protocol | default "tcp" }} {{ .listenerAddress }}): namespaces {{ join "," (.namespaces | default (list .namespace)) }}, port name "{{ .backendPortName }}"
+{{- end }}
+
+   kubectl -n <namespace> annotate service <name> \
+     nautiluslb.cloudresty.io/enabled=true \
+     nautiluslb.cloudresty.io/configurations=<config>[,<config>/<route>]
+   # optional: nautiluslb.cloudresty.io/weight=1..100
+
+4. Configuration changes: `helm upgrade` with new values.config.
+{{- if eq .Values.configReload "watchFile" }}
+   Pods hot-reload the mounted file (the kubelet refreshes it within about a
+   minute); settings.* changes need a restart:
+   kubectl -n {{ $ns }} rollout restart {{ lower .Values.mode }}/{{ $fullname }}
+{{- else }}
+   Pods roll automatically (checksum/config annotation).
+{{- end }}
+{{- if .Values.hostNetwork }}
+
+Listeners bind directly on the nodes' addresses (hostNetwork); no Service was created.
+{{- if and (eq .Values.admin.host "0.0.0.0") (not .Values.admin.bindPodIP) }}
+NOTE: the admin port {{ .Values.admin.port }} listens on every node interface; consider admin.bindPodIP=true.
+{{- end }}
+{{- range $listeners }}
+{{- if and (lt (int .targetPort) 1024) (not (include "nautiluslb.rootMode" $)) }}
+WARNING: listener port {{ .targetPort }} is below 1024 with hostNetwork. UID 65532 can bind it only if the
+node's net.ipv4.ip_unprivileged_port_start is <= {{ .targetPort }} (or set privilegedPortsMode=root, less secure; see values.yaml).
+{{- end }}
+{{- end }}
+{{- else if and .Values.service.enabled $listeners }}
+
+Listener Service: {{ $fullname }} (type {{ .Values.service.type }}), ports:
+{{- range $listeners }} {{ .port }}/{{ .protocol }}{{ end }}
+{{- end }}

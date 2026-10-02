@@ -295,6 +295,7 @@ func (l *Listener) Drain(ctx context.Context) (forced int) {
 	case <-ctx.Done():
 		l.cancel() // abort dials still in flight; handlers registering now see it
 		forced = l.reg.closeAll()
+		l.rec.DrainForced(l.name, forced)
 		select {
 		case <-done:
 		case <-time.After(forceWait):

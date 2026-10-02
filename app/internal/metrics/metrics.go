@@ -33,6 +33,8 @@ type Recorder interface {
 	Ready(ok bool)
 	PipeMode(mode string)
 	AccessLogDropped()
+	// DrainForced counts connections force-closed when a drain deadline expired.
+	DrainForced(listener string, n int)
 }
 
 const ns = "nautiluslb"
@@ -59,6 +61,7 @@ type prom struct {
 	reconcileDur                     prometheus.Observer
 	informerSynced                   *prometheus.GaugeVec
 	dropped                          prometheus.Counter
+	drainForced                      *prometheus.CounterVec
 }
 
 func lbl(perBackend bool, l ...string) []string {
@@ -106,6 +109,7 @@ func NewPrometheus(reg prometheus.Registerer, perBackend bool) Recorder {
 		prometheus.ExponentialBucketsRange(0.001, 30, 14)).WithLabelValues()
 	p.lastReconcile = f.gauge("discovery_last_success_timestamp_seconds", "Unix time of the last successful reconcile.")
 	p.informerSynced = f.gaugeVec("discovery_informer_synced", "1 when informers of the resource are synced.", "resource")
+	p.drainForced = f.counter("drain_forced_total", "Connections force-closed when a drain deadline expired.", "listener")
 	p.dropped = f.counter("accesslog_dropped_total", "Access log records dropped on overflow.").WithLabelValues()
 	return p
 }
@@ -237,6 +241,12 @@ func (p *prom) Ready(ok bool)        { p.ready.Set(b2f(ok)) }
 func (p *prom) PipeMode(mode string) { p.pipeMode.WithLabelValues(mode).Inc() }
 func (p *prom) AccessLogDropped()    { p.dropped.Inc() }
 
+func (p *prom) DrainForced(l string, n int) {
+	if n > 0 {
+		p.drainForced.WithLabelValues(l).Add(float64(n))
+	}
+}
+
 type nop struct{}
 
 func (nop) ConnAccepted(string)                                       {}
@@ -256,6 +266,7 @@ func (nop) ConfigReload(string)                                       {}
 func (nop) Ready(bool)                                                {}
 func (nop) PipeMode(string)                                           {}
 func (nop) AccessLogDropped()                                         {}
+func (nop) DrainForced(string, int)                                   {}
 
 // NewNop returns a Recorder that discards everything.
 func NewNop() Recorder { return nop{} }

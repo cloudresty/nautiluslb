@@ -437,3 +437,31 @@ func TestStopNoGoroutineLeak(t *testing.T) {
 		t.Fatalf("goroutines: %d after Stop, %d before\n%s", n, before, buf)
 	}
 }
+
+func TestRebindRemoveReaddResendsEndpoints(t *testing.T) {
+	client := fake.NewClientset(node("n1", "10.0.0.1"),
+		nodePortSvc("a", "svc", bound("p", "x"), corev1.ServicePort{Name: "https", NodePort: 30001}))
+	sink := &recSink{}
+	m := startManager(t, client, testOpts(sink, 300*time.Millisecond), poolSpec("p", "a"), poolSpec("x", "a"))
+	waitEndpoints(t, sink, "x", "10.0.0.1:30001")
+	before := sink.callsFor("x")
+
+	// Remove and re-add x faster than the debounce: no reconcile sees the gap.
+	if err := m.Rebind([]config.PoolSpec{poolSpec("p", "a")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Rebind([]config.PoolSpec{poolSpec("p", "a"), poolSpec("x", "a")}); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "x endpoints resent", func() bool { return sink.callsFor("x") > before })
+}
+
+func TestSyncedClosesOnce(t *testing.T) {
+	client := fake.NewClientset(node("n1", "10.0.0.1"))
+	m := startManager(t, client, testOpts(&recSink{}, 10*time.Millisecond), poolSpec("p", "a"))
+	select {
+	case <-m.Synced():
+	case <-time.After(5 * time.Second):
+		t.Fatal("Synced not closed after Start returned nil")
+	}
+}

@@ -52,6 +52,7 @@ type fakeRec struct {
 	open, closing atomic.Int64
 	mu            sync.Mutex
 	rejected      map[string]int
+	drained       []int
 }
 
 func newRec() *fakeRec { return &fakeRec{Recorder: metrics.NewNop(), rejected: map[string]int{}} }
@@ -63,7 +64,12 @@ func (r *fakeRec) UDPSession(_, ev string) {
 	}
 }
 func (r *fakeRec) ConnRejected(_, reason string) { r.mu.Lock(); r.rejected[reason]++; r.mu.Unlock() }
-func (r *fakeRec) rej(reason string) int         { r.mu.Lock(); defer r.mu.Unlock(); return r.rejected[reason] }
+func (r *fakeRec) DrainForced(_ string, n int) {
+	r.mu.Lock()
+	r.drained = append(r.drained, n)
+	r.mu.Unlock()
+}
+func (r *fakeRec) rej(reason string) int { r.mu.Lock(); defer r.mu.Unlock(); return r.rejected[reason] }
 
 type fakeLog struct {
 	mu   sync.Mutex
@@ -457,4 +463,20 @@ func TestAllCandidatesAtCapRejects(t *testing.T) {
 	h := start(t, baseCfg(), &fakePool{bs: []*backend.Backend{full}, all: true}, nil)
 	_, _ = h.client(t).Write([]byte("x"))
 	eventually(t, "limit_backend rejection", func() bool { return h.rec.rej("limit_backend") > 0 })
+}
+
+func TestDrainForcedMetric(t *testing.T) {
+	a, _ := echo(t, "A:")
+	h := start(t, baseCfg(), &fakePool{bs: []*backend.Backend{newBackend(a)}}, nil)
+	roundTrip(t, h.client(t), "x")
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if forced := h.l.Drain(ctx); forced != 1 {
+		t.Fatalf("forced = %d, want 1", forced)
+	}
+	h.rec.mu.Lock()
+	defer h.rec.mu.Unlock()
+	if len(h.rec.drained) != 1 || h.rec.drained[0] != 1 {
+		t.Fatalf("DrainForced calls = %v, want [1]", h.rec.drained)
+	}
 }

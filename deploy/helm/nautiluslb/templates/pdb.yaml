@@ -1,0 +1,18 @@
+{{- if and .Values.podDisruptionBudget.enabled (eq .Values.mode "Deployment") (gt (int .Values.replicaCount) 1) }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "nautiluslb.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nautiluslb.labels" . | nindent 4 }}
+spec:
+  {{- if not (kindIs "invalid" .Values.podDisruptionBudget.maxUnavailable) }}
+  maxUnavailable: {{ .Values.podDisruptionBudget.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "nautiluslb.selectorLabels" . | nindent 6 }}
+{{- end }}

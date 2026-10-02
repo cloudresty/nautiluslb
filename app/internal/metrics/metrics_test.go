@@ -27,6 +27,7 @@ func exercise(r Recorder) {
 	r.Ready(true)
 	r.PipeMode("splice")
 	r.AccessLogDropped()
+	r.DrainForced("l", 2)
 }
 
 func gather(t *testing.T, reg *prometheus.Registry) map[string]*dto.MetricFamily {
@@ -55,7 +56,7 @@ func TestEveryCatalogueMetricRegistered(t *testing.T) {
 		"backend_healthy", "backend_health_transitions_total", "pool_backends",
 		"health_probe_duration_seconds", "udp_sessions_active", "udp_sessions_total",
 		"udp_datagrams_total", "discovery_reconcile_total", "discovery_reconcile_duration_seconds",
-		"discovery_informer_synced", "discovery_last_success_timestamp_seconds", "accesslog_dropped_total",
+		"discovery_informer_synced", "discovery_last_success_timestamp_seconds", "accesslog_dropped_total", "drain_forced_total",
 	} {
 		if _, ok := got["nautiluslb_"+n]; !ok {
 			t.Errorf("missing nautiluslb_%s", n)
@@ -132,5 +133,21 @@ func TestNopAndDeltas(t *testing.T) {
 	r.ConnActive("l", -1)
 	if v := gather(t, reg)["nautiluslb_connections_active"].GetMetric()[0].GetGauge().GetValue(); v != 1 {
 		t.Errorf("active = %v; want 1", v)
+	}
+}
+
+func TestDrainForcedAddsN(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	r := NewPrometheus(reg, false)
+	r.DrainForced("l", 2)
+	r.DrainForced("l", 3)
+	r.DrainForced("l", 0)
+	r.DrainForced("l", -4)
+	f := gather(t, reg)["nautiluslb_drain_forced_total"]
+	if f == nil || len(f.GetMetric()) != 1 {
+		t.Fatalf("family = %v", f)
+	}
+	if v := f.GetMetric()[0].GetCounter().GetValue(); v != 5 {
+		t.Fatalf("drain_forced_total = %v, want 5", v)
 	}
 }

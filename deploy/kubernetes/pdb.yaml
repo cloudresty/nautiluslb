@@ -1,0 +1,19 @@
+# NautilusLB v2 raw manifests: mirrors the Helm chart defaults
+# (deploy/helm/nautiluslb); `bash deploy/check-drift.sh` checks them.
+#
+# Keep at least one replica serving through voluntary disruptions (node
+# drains, cluster upgrades).
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: nautiluslb
+  namespace: nautiluslb
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nautiluslb
+      app.kubernetes.io/instance: nautiluslb

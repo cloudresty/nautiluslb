@@ -2,208 +2,311 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
-	"net"
+	"io"
 	"os"
 	"os/signal"
-	"sync"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/cloudresty/emit"
+	"github.com/cloudresty/nautiluslb/internal/accesslog"
+	"github.com/cloudresty/nautiluslb/internal/admin"
 	"github.com/cloudresty/nautiluslb/internal/config"
-	"github.com/cloudresty/nautiluslb/internal/discovery"
-	"github.com/cloudresty/nautiluslb/internal/tcpproxy"
+	"github.com/cloudresty/nautiluslb/internal/kube"
+	"github.com/cloudresty/nautiluslb/internal/metrics"
+	nlbruntime "github.com/cloudresty/nautiluslb/internal/runtime"
 	"github.com/cloudresty/nautiluslb/internal/version"
 )
 
+const (
+	watchInterval  = 2 * time.Second
+	shutdownMargin = 2 * time.Second
+	closeTimeout   = 2 * time.Second
+)
+
 func main() {
+	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout))
+}
 
-	// Configure emit logging
-	emit.SetLevel("info")
-
-	// Parse command line flags
-	var showHelp = flag.Bool("help", false, "Show help information")
-	var showVersion = flag.Bool("version", false, "Print version and exit")
+// run is main without os.Exit, so the flag paths are testable.
+func run(args []string, getenv func(string) string, stdout io.Writer) int {
+	fs := flag.NewFlagSet("nautiluslb", flag.ContinueOnError)
+	fs.SetOutput(stdout)
+	showHelp := fs.Bool("help", false, "Show help information")
+	showVersion := fs.Bool("version", false, "Print version and exit")
+	validate := fs.Bool("validate", false, "Load and validate the configuration, print a summary and exit")
+	pprofOn := fs.Bool("pprof", false, "Enable /debug/pprof on the admin server")
 	defaultConfig := "config.yaml"
-	if env := os.Getenv("NLB_CONFIG"); env != "" {
+	if env := getenv("NLB_CONFIG"); env != "" {
 		defaultConfig = env
 	}
-	var configPath = flag.String("config", defaultConfig, "Path to the configuration file (env NLB_CONFIG sets the default)")
-	flag.Parse()
+	configPath := fs.String("config", defaultConfig, "Path to the configuration file (env NLB_CONFIG sets the default)")
+	if err := fs.Parse(args); err != nil {
+		if err == flag.ErrHelp {
+			return 0
+		}
+		return 2
+	}
 
 	if *showVersion {
-		fmt.Println(version.String())
-		os.Exit(0)
+		_, _ = fmt.Fprintln(stdout, version.String())
+		return 0
 	}
-
 	if *showHelp {
-		fmt.Println("NautilusLB - Kubernetes-native Load Balancer")
-		fmt.Println()
-		fmt.Println("Usage:")
-		fmt.Println("  nautiluslb [options]")
-		fmt.Println()
-		fmt.Println("Options:")
-		fmt.Println("  -help        Show this help message")
-		fmt.Println("  -config      Path to the configuration file (default config.yaml, env NLB_CONFIG)")
-		fmt.Println("  -version     Print version and exit")
-		fmt.Println()
-		fmt.Println("Configuration:")
-		fmt.Println("  The application reads configuration from the --config file (default config.yaml in the current directory).")
-		fmt.Println("  Each configuration must list the namespaces it discovers Services in")
-		fmt.Println("  (namespaces: [a, b]), or namespaces: [\"*\"] for cluster-wide discovery.")
-		fmt.Println()
-		fmt.Println("  A Service is a backend of a configuration only when all of these hold:")
-		fmt.Println("    " + config.ServiceEnabledAnnotation + ": \"true\"")
-		fmt.Println("    " + config.ServiceConfigurationsAnnotation + ": \"<name>[,<name>...]\" names the configuration")
-		fmt.Println("    the Service is in one of the configuration's namespaces")
-		fmt.Println("    a Service port is named the configuration's backendPortName")
-		fmt.Println()
-		fmt.Println("  See config.example.yaml for a complete example.")
-		fmt.Println()
-		fmt.Println("For more information, visit: https://github.com/cloudresty/nautiluslb")
-		os.Exit(0)
+		printHelp(stdout)
+		return 0
 	}
 
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		emit.Error.StructuredFields("Failed to load configuration",
+			emit.ZString("config_file", *configPath),
+			emit.ZString("error", err.Error()))
+		if *validate {
+			_, _ = fmt.Fprintf(stdout, "invalid: %v\n", err)
+		}
+		return 1
+	}
+
+	if *validate {
+		printSummary(stdout, *configPath, cfg)
+		return 0
+	}
+
+	return serve(*configPath, cfg, *pprofOn)
+}
+
+func printHelp(w io.Writer) {
+	lines := []string{
+		"NautilusLB - Kubernetes-native Layer 4 Load Balancer",
+		"",
+		"Usage:",
+		"  nautiluslb [options]",
+		"",
+		"Options:",
+		"  --config     Path to the configuration file (default config.yaml, env NLB_CONFIG)",
+		"  --validate   Load and validate the configuration, print a summary and exit (0 valid, 1 invalid; no network)",
+		"  --pprof      Enable /debug/pprof on the admin server",
+		"  --version    Print version and exit",
+		"  --help       Show this help message",
+		"",
+		"Configuration:",
+		"  Each configuration lists the namespaces it discovers Services in",
+		"  (namespaces: [a, b]), or namespaces: [\"*\"] for cluster-wide discovery.",
+		"",
+		"  A Service is a backend of a configuration only when all of these hold:",
+		"    " + config.ServiceEnabledAnnotation + ": \"true\"",
+		"    " + config.ServiceConfigurationsAnnotation + ": \"<name>[,<name>...]\" names the configuration",
+		"    the Service is in one of the configuration's namespaces",
+		"    a Service port is named the configuration's backendPortName",
+		"",
+		"Admin endpoints (settings.admin.address):",
+		"  /metrics  /healthz  /health/live  /readyz  /health/ready  /debug/pprof/* (when enabled)",
+		"",
+		"Signals:",
+		"  SIGHUP         reload the configuration without dropping unchanged listeners",
+		"  SIGTERM/SIGINT graceful drain; a second signal forces an immediate close",
+		"",
+		"See config.example.yaml for a complete example.",
+		"For more information, visit: https://github.com/cloudresty/nautiluslb",
+	}
+	_, _ = fmt.Fprintln(w, strings.Join(lines, "\n"))
+}
+
+func printSummary(w io.Writer, path string, cfg *config.Config) {
+	_, _ = fmt.Fprintf(w, "configuration %s is valid: %d configuration(s)\n", path, len(cfg.Configurations))
+	for i := range cfg.Configurations {
+		bc := &cfg.Configurations[i]
+		ns := strings.Join(bc.DiscoveryNamespaces(), ",")
+		if ns == "" {
+			ns = config.AllNamespaces
+		}
+		_, _ = fmt.Fprintf(w, "  %s: protocol=%s listener=%s pools=%d namespaces=%s\n",
+			bc.Name, bc.Protocol, bc.ListenerAddress, len(bc.Pools()), ns)
+	}
+	for _, d := range cfg.Deprecations() {
+		_, _ = fmt.Fprintf(w, "deprecation: %s\n", d)
+	}
+}
+
+func serve(configPath string, cfg *config.Config, pprofOn bool) int {
 	emit.Info.Msg("Starting NautilusLB...")
 	emit.Info.StructuredFields("Application Information",
 		emit.ZString("app_name", "NautilusLB"),
 		emit.ZString("repository", "https://github.com/cloudresty/nautiluslb"),
 		emit.ZString("version", version.String()))
-	emit.Info.Msg("Loading configuration...")
+	emit.SetLevel(cfg.Settings.LogLevel)
 
-	//
-	// Load configuration from YAML file
-	//
+	// Install the handler before anything binds, so SIGTERM always reaches
+	// the shutdown path.
+	sigs := make(chan os.Signal, 4)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(sigs)
 
-	configData, err := config.Load(*configPath)
+	reg := metrics.NewRegistry()
+	metrics.RegisterBuildInfo(reg)
+	rec := metrics.NewPrometheus(reg, cfg.Settings.Admin.Metrics.PerBackend)
+
+	alog, closeLog, err := accesslog.New(cfg.Settings.AccessLog, rec)
 	if err != nil {
-		emit.Error.StructuredFields("Failed to load configuration",
-			emit.ZString("config_file", *configPath),
-			emit.ZString("error", err.Error()))
-		os.Exit(1)
+		emit.Error.StructuredFields("Failed to open access log", emit.ZString("error", err.Error()))
+		return 1
 	}
 
-	//
-	// Initialize Kubernetes client
-	//
-
-	_, currentContext, err := discovery.GetK8sClient(configData.Settings.Kubernetes.Kubeconfig)
+	client, kubeContext, err := kube.NewClient(cfg.Settings.Kubernetes, "nautiluslb/"+version.Version)
 	if err != nil {
 		emit.Error.StructuredFields("Failed to initialize Kubernetes client",
-			emit.ZString("kubeconfig_path", configData.Settings.Kubernetes.Kubeconfig),
+			emit.ZString("kubeconfig_path", cfg.Settings.Kubernetes.Kubeconfig),
 			emit.ZString("error", err.Error()))
-		os.Exit(1)
+		return 1
 	}
-	emit.Info.StructuredFields("Initialized Kubernetes client",
-		emit.ZString("context", currentContext))
-	// Install the signal handler before anything starts, so SIGTERM (docker
-	// stop) always reaches the shutdown path below.
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	emit.Info.StructuredFields("Initialized Kubernetes client", emit.ZString("context", kubeContext))
 
-	var wg sync.WaitGroup
-	var loadBalancers []*tcpproxy.LoadBalancer
-
-	//
-	// Create a new load balancer for each backend configuration
-	//
-
-	for _, backendConfig := range configData.Configurations {
-
-		// Parse the duration string into a time.Duration
-		duration := backendConfig.EffectiveDialTimeout()
-
-		loadBalancers = append(loadBalancers, tcpproxy.NewLoadBalancer(backendConfig, duration))
-
+	rt, err := nlbruntime.New(nlbruntime.Options{Config: cfg, Client: client, Recorder: rec, AccessLog: alog})
+	if err != nil {
+		emit.Error.StructuredFields("Failed to bind listener", emit.ZString("error", err.Error()))
+		return 1
 	}
 
-	// Bind every listener before serving any, so a port in use is a clear
-	// startup error rather than a crash in a goroutine.
-	if addr, err := bindAll(loadBalancers); err != nil {
-		emit.Error.StructuredFields("Failed to bind listener",
-			emit.ZString("listener_addr", addr),
+	adm := admin.New(admin.Options{Settings: cfg.Settings.Admin, Pprof: pprofOn, Gatherer: reg, Readiness: rt})
+	if err := adm.Start(); err != nil {
+		emit.Error.StructuredFields("Failed to start admin server",
+			emit.ZString("admin_addr", cfg.Settings.Admin.Address),
 			emit.ZString("error", err.Error()))
-		os.Exit(1)
+		// Release the bound listeners.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		rt.Shutdown(ctx)
+		return 1
 	}
 
-	for i, lb := range loadBalancers {
-
-		wg.Add(1)
-		go func(lb *tcpproxy.LoadBalancer) {
-			defer wg.Done()
-			lb.Start()
-		}(lb)
-
-		emit.Info.StructuredFields("Started load balancer",
-			emit.ZString("config_name", configData.Configurations[i].Name),
-			emit.ZString("listener_port", listenerPort(lb.ListenerAddress)))
-
+	closeAll := func() {
+		cctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+		if err := closeLog(cctx); err != nil {
+			emit.Warn.StructuredFields("Closing access log", emit.ZString("error", err.Error()))
+		}
+		cancel()
+		actx, cancel := context.WithTimeout(context.Background(), closeTimeout)
+		if err := adm.Shutdown(actx); err != nil {
+			emit.Warn.StructuredFields("Closing admin server", emit.ZString("error", err.Error()))
+		}
+		cancel()
 	}
 
-	// Start centralized service discovery for all load balancers
-	discoveryCtx, stopDiscovery := context.WithCancel(context.Background())
-	var lbInterfaces []discovery.LoadBalancerInterface
-	for _, lb := range loadBalancers {
-		lbInterfaces = append(lbInterfaces, lb)
-	}
-	discoveryDone := make(chan struct{})
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		defer close(discoveryDone)
-		discovery.DiscoverK8sServicesForAll(discoveryCtx, lbInterfaces, configData.Configurations)
-	}()
-
-	sig := <-sigChan
-	emit.Info.StructuredFields("Shutting down gracefully...",
-		emit.ZString("signal", sig.String()))
-
-	// Stop discovery and wait for it to exit, so it cannot update a load
-	// balancer being stopped. The wait is bounded: in-flight API calls return
-	// promptly once the context is cancelled, but shutdown must never hang.
-	stopDiscovery()
-	select {
-	case <-discoveryDone:
-	case <-time.After(5 * time.Second):
-		emit.Warn.Msg("Service discovery did not stop within 5s, continuing shutdown")
-	}
-
-	// Stop the load balancers that are actually running. Connections being
-	// proxied end when the process exits.
-	for _, lb := range loadBalancers {
-		emit.Info.StructuredFields("Stopping load balancer",
-			emit.ZString("listener_addr", lb.ListenerAddress))
-		lb.Stop()
-	}
-
-	wg.Wait()
-
-	emit.Info.Msg("Shutdown complete.")
-	os.Exit(0)
-
+	return lifecycle(rt, rec, cfg, configPath, sigs, closeAll)
 }
 
-// bindAll binds every load balancer's listener. If any bind fails, the ones
-// already bound are stopped, and the failing listener address is returned.
-func bindAll(loadBalancers []*tcpproxy.LoadBalancer) (string, error) {
+// lifecycleRuntime is the part of the runtime the supervisor drives.
+type lifecycleRuntime interface {
+	Start(ctx context.Context) error
+	Reload(cfg *config.Config) (nlbruntime.Summary, error)
+	Shutdown(ctx context.Context) nlbruntime.Summary
+}
 
-	for i, lb := range loadBalancers {
-		if err := lb.Listen(); err != nil {
-			for _, bound := range loadBalancers[:i] {
-				bound.Stop()
+// startOrSignal runs rt.Start in the background so that a shutdown signal
+// received while it waits for discovery to sync is acted on at once: the
+// signal cancels Start's context and the function waits for Start to return.
+// SIGHUP during Start is re-queued for the supervisor. It returns Start's
+// error and the terminating signal, if one arrived.
+func startOrSignal(rt lifecycleRuntime, sigs chan os.Signal, bg context.Context, stopBg context.CancelFunc) (os.Signal, error) {
+	done := make(chan error, 1)
+	go func() { done <- rt.Start(bg) }()
+	hup := false
+	requeue := func() {
+		if hup {
+			select {
+			case sigs <- syscall.SIGHUP:
+			default:
 			}
-			return lb.ListenerAddress, fmt.Errorf("binding listener: %w", err)
+		}
+	}
+	for {
+		select {
+		case err := <-done:
+			requeue()
+			return nil, err
+		case sig := <-sigs:
+			if sig == syscall.SIGHUP {
+				hup = true
+				continue
+			}
+			stopBg()
+			err := <-done
+			return sig, err
+		}
+	}
+}
+
+// lifecycle starts rt, then supervises signals, reloads and shutdown. closeAll
+// runs after the runtime has drained (access log, admin server).
+func lifecycle(rt lifecycleRuntime, rec interface{ ConfigReload(string) }, cfg *config.Config, configPath string,
+	sigs chan os.Signal, closeAll func()) int {
+	bg, stopBg := context.WithCancel(context.Background())
+	defer stopBg()
+
+	timeout := cfg.Settings.Drain.Timeout.Std() + cfg.Settings.Drain.ReadinessDelay.Std() + shutdownMargin
+	shutdown := func(ctx context.Context) {
+		stopBg()
+		sum := rt.Shutdown(ctx)
+		emit.Info.StructuredFields("Drain complete", emit.ZInt("forced_connections", sum.Forced))
+		closeAll()
+	}
+
+	sig, startErr := startOrSignal(rt, sigs, bg, stopBg)
+	switch {
+	case sig != nil:
+		emit.Info.StructuredFields("Shutting down gracefully...", emit.ZString("signal", sig.String()))
+		runShutdown(sigs, shutdown, timeout)
+		emit.Info.Msg("Shutdown complete.")
+		return 0
+	case errors.Is(startErr, context.Canceled):
+		runShutdown(sigs, shutdown, timeout)
+		emit.Info.Msg("Shutdown complete.")
+		return 0
+	case startErr != nil:
+		emit.Error.StructuredFields("Failed to start", emit.ZString("error", startErr.Error()))
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		rt.Shutdown(ctx)
+		return 1
+	}
+
+	watch := make(chan struct{}, 1)
+	if cfg.Settings.Reload.WatchFile {
+		go watchFile(bg, configPath, watchInterval, watch)
+	}
+
+	reload := func() {
+		next, err := config.Load(configPath)
+		if err != nil {
+			emit.Error.StructuredFields("Failed to reload configuration",
+				emit.ZString("config_file", configPath),
+				emit.ZString("error", err.Error()))
+			rec.ConfigReload("rejected")
+			return
+		}
+		// A rejection is logged and counted by the runtime; only successes
+		// are summarised here.
+		sum, err := rt.Reload(next)
+		if err != nil {
+			return
+		}
+		emit.Info.StructuredFields("Configuration reloaded",
+			emit.ZString("added", strings.Join(sum.Added, ",")),
+			emit.ZString("removed", strings.Join(sum.Removed, ",")),
+			emit.ZString("updated", strings.Join(sum.Updated, ",")),
+			emit.ZString("unchanged", strings.Join(sum.Unchanged, ",")))
+		if len(sum.Ignored) > 0 {
+			emit.Warn.StructuredFields("Settings changed but need a restart",
+				emit.ZString("ignored", strings.Join(sum.Ignored, ",")))
 		}
 	}
 
-	return "", nil
-
-}
-
-// listenerPort returns the port of a host:port listener address, for logging.
-func listenerPort(addr string) string {
-	_, port, _ := net.SplitHostPort(addr)
-	return port
+	supervise(sigs, watch, reload, shutdown, timeout)
+	emit.Info.Msg("Shutdown complete.")
+	return 0
 }

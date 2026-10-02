@@ -1,0 +1,23 @@
+{{- if or .Values.metricsService.enabled .Values.serviceMonitor.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nautiluslb.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nautiluslb.labels" . | nindent 4 }}
+    app.kubernetes.io/component: metrics
+  {{- with .Values.metricsService.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nautiluslb.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: admin
+      port: {{ .Values.admin.port }}
+      targetPort: admin
+      protocol: TCP
+{{- end }}

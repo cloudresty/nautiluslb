@@ -574,6 +574,7 @@ wait:
 		}
 	}
 	forced = l.closeAll("draining")
+	l.rec.DrainForced(l.name, forced)
 	l.mu.Lock()
 	l.closed = true
 	c, started := l.conn, l.started

@@ -1,0 +1,11 @@
+{{- include "nautiluslb.validate" . }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nautiluslb.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nautiluslb.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    {{- include "nautiluslb.config" . | nindent 4 }}

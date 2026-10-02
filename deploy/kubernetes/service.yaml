@@ -1,0 +1,49 @@
+# NautilusLB v2 raw manifests: mirrors the Helm chart defaults
+# (deploy/helm/nautiluslb); `bash deploy/check-drift.sh` checks them.
+#
+# Two Services, so the admin port is never exposed through the load balancer:
+#   nautiluslb          LoadBalancer, the traffic listeners (one port per
+#                       configuration's listenerAddress)
+#   nautiluslb-metrics  ClusterIP, /metrics /healthz /readyz for Prometheus
+apiVersion: v1
+kind: Service
+metadata:
+  name: nautiluslb
+  namespace: nautiluslb
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+spec:
+  type: LoadBalancer
+  # Local keeps the real client IP, which access.allow/deny,
+  # maxConnectionsPerSource and source_ip_hash depend on. Nodes without a
+  # ready NautilusLB pod fail the cloud LB health check and get no traffic.
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nautiluslb-metrics
+  namespace: nautiluslb
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+  ports:
+    - name: admin
+      port: 9090
+      targetPort: admin
+      protocol: TCP

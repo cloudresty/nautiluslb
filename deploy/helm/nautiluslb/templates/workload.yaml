@@ -1,0 +1,203 @@
+{{- $listeners := include "nautiluslb.listeners" . | fromJsonArray }}
+{{- $root := include "nautiluslb.rootMode" . }}
+apiVersion: apps/v1
+kind: {{ .Values.mode }}
+metadata:
+  name: {{ include "nautiluslb.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nautiluslb.labels" . | nindent 4 }}
+spec:
+  {{- if eq .Values.mode "Deployment" }}
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    {{- if .Values.updateStrategy }}
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+    {{- else if .Values.hostNetwork }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+    {{- end }}
+  {{- else }}
+  updateStrategy:
+    {{- if .Values.updateStrategy }}
+    {{- toYaml .Values.updateStrategy | nindent 4 }}
+    {{- else }}
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+    {{- end }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "nautiluslb.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nautiluslb.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or .Values.podAnnotations (eq .Values.configReload "restart") }}
+      annotations:
+        {{- if eq .Values.configReload "restart" }}
+        checksum/config: {{ include "nautiluslb.config" . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "nautiluslb.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automount }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.hostNetwork }}
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ include "nautiluslb.terminationGrace" . }}
+      securityContext:
+        {{- if $root }}
+        # privilegedPortsMode: root (less secure): UID 0 limited to NET_BIND_SERVICE.
+        {{- toYaml (omit .Values.podSecurityContext "runAsNonRoot" "runAsUser" "runAsGroup") | nindent 8 }}
+        runAsNonRoot: false
+        runAsUser: 0
+        runAsGroup: 0
+        {{- else }}
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- end }}
+        {{- if and .Values.bindPrivilegedPorts (not .Values.hostNetwork) (not $root) }}
+        sysctls:
+          # Safe (namespaced) sysctl: lets UID 65532 bind listener ports < 1024.
+          # Capabilities cannot: Kubernetes sets no ambient capabilities.
+          - name: net.ipv4.ip_unprivileged_port_start
+            value: "0"
+        {{- end }}
+      containers:
+        - name: nautiluslb
+          image: {{ include "nautiluslb.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config
+            - /etc/nautiluslb/config.yaml
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          env:
+            # Let the Go runtime respect the container memory limit.
+            - name: GOMEMLIMIT
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.memory
+            {{- if .Values.admin.bindPodIP }}
+            - name: NLB_POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NLB_ADMIN_ADDRESS
+              value: "$(NLB_POD_IP):{{ .Values.admin.port }}"
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: admin
+              containerPort: {{ .Values.admin.port }}
+              protocol: TCP
+            {{- range $listeners }}
+            - name: {{ .name }}
+              containerPort: {{ .targetPort }}
+              protocol: {{ .protocol }}
+            {{- end }}
+          {{- if .Values.probes.startup.enabled }}
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            {{- toYaml (omit .Values.probes.startup "enabled") | nindent 12 }}
+          {{- end }}
+          {{- if .Values.probes.liveness.enabled }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            {{- toYaml (omit .Values.probes.liveness "enabled") | nindent 12 }}
+          {{- end }}
+          {{- if .Values.probes.readiness.enabled }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            {{- toYaml (omit .Values.probes.readiness "enabled") | nindent 12 }}
+          {{- end }}
+          securityContext:
+            {{- if $root }}
+            {{- toYaml (omit .Values.containerSecurityContext "capabilities" "runAsNonRoot" "runAsUser" "runAsGroup") | nindent 12 }}
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            {{- else }}
+            {{- toYaml (omit .Values.containerSecurityContext "capabilities") | nindent 12 }}
+            {{- end }}
+            capabilities:
+              {{- if .Values.containerSecurityContext.capabilities }}
+              {{- toYaml .Values.containerSecurityContext.capabilities | nindent 14 }}
+              {{- else }}
+              drop: ["ALL"]
+              {{- if $root }}
+              add: ["NET_BIND_SERVICE"]
+              {{- end }}
+              {{- end }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nautiluslb
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        # Mounted as a directory (never subPath) so the kubelet can update
+        # config.yaml in place for configReload: watchFile.
+        - name: config
+          configMap:
+            name: {{ include "nautiluslb.fullname" . }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

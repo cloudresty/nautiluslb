@@ -1,9 +1,6 @@
 // Package backend holds the v2 backend model: an immutable Endpoint produced by
 // discovery, a Backend carrying its lock-free runtime state (health, active
 // connections, ejection hold) and an immutable Snapshot handed to balancers.
-//
-// The v1 BackendServer lives in legacy.go until discovery and tcpproxy are
-// migrated.
 package backend
 
 import (

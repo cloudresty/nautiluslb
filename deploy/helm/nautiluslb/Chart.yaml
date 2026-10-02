@@ -1,0 +1,19 @@
+apiVersion: v2
+name: nautiluslb
+description: NautilusLB, a Layer 4 (TCP, TLS passthrough with SNI routing, UDP) load balancer for Kubernetes Services.
+type: application
+version: 2.0.0
+appVersion: "v2.0.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/cloudresty/nautiluslb
+sources:
+  - https://github.com/cloudresty/nautiluslb
+keywords:
+  - load-balancer
+  - tcp
+  - udp
+  - sni
+  - layer4
+maintainers:
+  - name: Cloudresty
+    url: https://github.com/cloudresty

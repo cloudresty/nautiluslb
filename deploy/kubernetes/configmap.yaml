@@ -1,0 +1,69 @@
+# NautilusLB v2 raw manifests: mirrors the Helm chart defaults
+# (deploy/helm/nautiluslb); `bash deploy/check-drift.sh` checks them.
+#
+# The configuration file, mounted at /etc/nautiluslb/config.yaml. The full
+# schema with every field is documented in app/config.example.yaml and
+# docs/configuration.md.
+#
+# Reload: `settings.reload.watchFile: true` makes NautilusLB poll the file and
+# reload when the kubelet syncs a ConfigMap change (typically within a minute).
+# This only works because the Deployment mounts the whole ConfigMap as a
+# directory; a subPath mount is never updated. A reload that fails validation is
+# rejected as a whole and the running configuration is kept. `settings.*` are
+# not hot-reloadable: changing them requires a rollout.
+#
+# Every Service in the allowlisted namespaces must opt in explicitly:
+#
+#   metadata:
+#     annotations:
+#       nautiluslb.cloudresty.io/enabled: "true"
+#       nautiluslb.cloudresty.io/configurations: "http"
+#   spec:
+#     type: NodePort
+#     ports:
+#       - name: http        # matches backendPortName
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nautiluslb
+  namespace: nautiluslb
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+data:
+  config.yaml: |
+    apiVersion: nautiluslb.cloudresty.io/v2
+    kind: Config
+
+    settings:
+      logLevel: info
+      kubernetes:
+        kubeconfig: ""              # "" = in-cluster ServiceAccount
+      admin:
+        # Must listen on all interfaces so the kubelet probes and Prometheus
+        # can reach /healthz, /readyz and /metrics.
+        address: "0.0.0.0:9090"
+        pprof: false
+      accessLog:
+        enabled: true
+        output: stdout
+      drain:
+        readinessDelay: 3s
+        timeout: 30s                # keep terminationGracePeriodSeconds >= 30 + 3 + 15
+      reload:
+        watchFile: true
+
+    configurations:
+      # Plain TCP. The container listens on 8080 (no privileged port needed);
+      # the LoadBalancer Service maps port 80 to it.
+      - name: http
+        protocol: tcp
+        listenerAddress: ":8080"
+        namespaces: [ingress-nginx]   # each needs a Role, see rbac-namespaced.yaml
+        backendPortName: http
+        balancer:
+          algorithm: round_robin
+        health:
+          type: tcp
+          interval: 10s
+          timeout: 2s

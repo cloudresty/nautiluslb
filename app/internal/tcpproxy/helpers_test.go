@@ -88,6 +88,7 @@ type fakeRec struct {
 	modes    map[string]int
 	bytesIn  int64
 	bytesOut int64
+	drained  []int
 }
 
 func newFakeRec() *fakeRec {
@@ -118,6 +119,12 @@ func (r *fakeRec) BackendDial(_, _, _, result string, _ time.Duration) {
 }
 func (r *fakeRec) BackendActive(_, _, _ string, d int) { r.mu.Lock(); r.bActive += d; r.mu.Unlock() }
 func (r *fakeRec) PipeMode(m string)                   { r.mu.Lock(); r.modes[m]++; r.mu.Unlock() }
+
+func (r *fakeRec) DrainForced(_ string, n int) {
+	r.mu.Lock()
+	r.drained = append(r.drained, n)
+	r.mu.Unlock()
+}
 
 func (r *fakeRec) get(f func(*fakeRec) int) int {
 	r.mu.Lock()

@@ -11,7 +11,7 @@ BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 VERSION_PKG = github.com/cloudresty/nautiluslb/internal/version
 LDFLAGS = -X $(VERSION_PKG).Version=$(VERSION) -X $(VERSION_PKG).Commit=$(COMMIT) -X $(VERSION_PKG).BuildDate=$(BUILD_DATE)
 
-.PHONY: help build build-local run shell clean test lint vuln fuzz bench e2e docker-build
+.PHONY: help build build-local run shell clean test lint vuln fuzz bench e2e integration docker-build
 
 help: ## Show list of make targets and their description.
 	@grep -E '^[%a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -32,6 +32,9 @@ build: ## Build a docker image locally.
 		--build-arg BUILD_DATE=$(BUILD_DATE) \
 		--tag ${DOCKER_REPO}:${DOCKER_TAG} \
 		--file build/Dockerfile .
+
+integration: ## Run the in-process end-to-end tests (real Runtime, fake clientset, loopback backends).
+	@cd app && go test -race -tags integration -count=1 ./internal/integration/...
 
 docker-build: build ## Alias for build target.
 
