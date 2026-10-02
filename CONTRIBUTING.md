@@ -22,6 +22,7 @@ cd nautiluslb
 Create a new branch for your changes:
 
 ```bash
+git checkout develop
 git checkout -b my-feature-or-bugfix
 ```
 
@@ -33,11 +34,21 @@ git checkout -b my-feature-or-bugfix
 
 ### 5. Run Tests
 
-Before submitting your changes, make sure all tests pass:
+The Go module lives in `app/`, so run the checks from the repository root through `make`:
 
 ```bash
-go test ./...
+make test   # unit tests with the race detector (go test -race ./... in app/)
+make lint   # golangci-lint v2
+make vuln   # govulncheck
 ```
+
+If you have Docker, [kind](https://kind.sigs.k8s.io/) and kubectl, also run the end-to-end test. It creates a throwaway kind cluster, runs NautilusLB against it and deletes everything afterwards (`KEEP=1` keeps the cluster for debugging):
+
+```bash
+make e2e
+```
+
+CI runs all of these on every pull request.
 
 ### 6. Commit and Push
 
@@ -51,7 +62,7 @@ git push origin my-feature-or-bugfix
 
 ### 7. Open a Pull Request
 
-Go to your fork on GitHub and open a pull request (PR) against the `main` branch of the upstream repository. Please include a clear description of your changes and reference any related issues.
+Go to your fork on GitHub and open a pull request (PR) against the `develop` branch of the upstream repository (`main` only receives releases from `develop`). Please include a clear description of your changes and reference any related issues.
 
 ---
 
