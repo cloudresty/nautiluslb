@@ -1,0 +1,48 @@
+# Minimal RBAC for NautilusLB, as documented in the README.
+#
+# NautilusLB only ever LISTs two resources:
+#   - nodes     (cluster-scoped; their InternalIPs are the NodePort backends)
+#   - services  (in each namespace of each configuration's allowlist)
+#
+# The e2e test (run.sh) runs NautilusLB with a token for this ServiceAccount
+# rather than the kind admin kubeconfig, to prove this is sufficient.
+#
+# If every configuration lists explicit namespaces, the services rule may be
+# narrowed to a Role + RoleBinding in each of those namespaces; a ClusterRole
+# binding is required for `namespaces: ["*"]`.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nautiluslb
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nautiluslb
+  namespace: nautiluslb
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nautiluslb-discovery
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nautiluslb-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nautiluslb-discovery
+subjects:
+  - kind: ServiceAccount
+    name: nautiluslb
+    namespace: nautiluslb

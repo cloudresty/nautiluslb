@@ -1,0 +1,138 @@
+# Workloads for the NautilusLB end-to-end test (see run.sh).
+#
+# The configuration under test is named "e2e_http", listens on :8080, uses
+# backendPortName "http" and allows only the namespace "e2e-apps".
+#
+#   bound     e2e-apps   enabled + configurations=e2e_http      -> MUST receive traffic
+#   intruder  e2e-apps   enabled + configurations=other_config  -> must NOT (hijack regression)
+#   outsider  e2e-other  enabled + configurations=e2e_http      -> must NOT (namespace allowlist)
+#
+# All three Services are NodePort with a port named "http", so before v1.0.1
+# every one of them would have joined the e2e_http pool.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-apps
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-other
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bound
+  namespace: e2e-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: bound }
+  template:
+    metadata:
+      labels: { app: bound }
+    spec:
+      containers:
+        - name: echo
+          image: hashicorp/http-echo:1.0@sha256:fcb75f691c8b0414d670ae570240cbf95502cc18a9ba57e982ecac589760a186
+          args: ["-listen=:5678", "-text=bound"]
+          ports:
+            - containerPort: 5678
+          readinessProbe:
+            tcpSocket: { port: 5678 }
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bound
+  namespace: e2e-apps
+  annotations:
+    nautiluslb.cloudresty.io/enabled: "true"
+    nautiluslb.cloudresty.io/configurations: "e2e_http"
+spec:
+  type: NodePort
+  selector: { app: bound }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5678
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intruder
+  namespace: e2e-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: intruder }
+  template:
+    metadata:
+      labels: { app: intruder }
+    spec:
+      containers:
+        - name: echo
+          image: hashicorp/http-echo:1.0@sha256:fcb75f691c8b0414d670ae570240cbf95502cc18a9ba57e982ecac589760a186
+          args: ["-listen=:5678", "-text=intruder"]
+          ports:
+            - containerPort: 5678
+          readinessProbe:
+            tcpSocket: { port: 5678 }
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: intruder
+  namespace: e2e-apps
+  annotations:
+    nautiluslb.cloudresty.io/enabled: "true"
+    nautiluslb.cloudresty.io/configurations: "other_config"
+spec:
+  type: NodePort
+  selector: { app: intruder }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5678
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outsider
+  namespace: e2e-other
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: outsider }
+  template:
+    metadata:
+      labels: { app: outsider }
+    spec:
+      containers:
+        - name: echo
+          image: hashicorp/http-echo:1.0@sha256:fcb75f691c8b0414d670ae570240cbf95502cc18a9ba57e982ecac589760a186
+          args: ["-listen=:5678", "-text=outsider"]
+          ports:
+            - containerPort: 5678
+          readinessProbe:
+            tcpSocket: { port: 5678 }
+            periodSeconds: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: outsider
+  namespace: e2e-other
+  annotations:
+    nautiluslb.cloudresty.io/enabled: "true"
+    nautiluslb.cloudresty.io/configurations: "e2e_http"
+spec:
+  type: NodePort
+  selector: { app: outsider }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 5678
