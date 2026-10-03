@@ -371,30 +371,20 @@ On `SIGTERM`, `/readyz` turns 503 for `settings.drain.readinessDelay` (3s) befor
 
 ## Upgrading to v2.0.0
 
-The Service annotations and binding rules are unchanged. The configuration file, RBAC, logs and ports change:
+v2.0.0 follows v1.0.0 (published images up to `v0.0.11`). It closes a traffic-hijacking hole, so **every deployment needs edits to both `config.yaml` and the annotated Services**:
 
-- `apiVersion: nautiluslb.cloudresty.io/v2` and `kind: Config` are **required** at the top of `config.yaml`.
+- **Services must name their configurations.** Add `nautiluslb.cloudresty.io/configurations: "<name>[,<name>...]"` next to `nautiluslb.cloudresty.io/enabled: "true"`. In v1.0.0, any enabled Service with a matching port name, in any namespace, joined a listener's pool. This annotation is ignored by v1.0.0, so apply it first.
+- **Every configuration needs `namespaces`.** An empty namespace no longer means "everywhere"; `["*"]` opts into cluster-wide discovery deliberately.
+- `apiVersion: nautiluslb.cloudresty.io/v2` and `kind: Config` are **required** at the top of `config.yaml`, and the file is parsed strictly: unknown keys and invalid values stop startup.
 - `settings.kubeconfigPath` becomes `settings.kubernetes.kubeconfig`, `requestTimeout: 5` becomes `dialTimeout: 5s` and `namespace: x` becomes `namespaces: [x]`. The old keys still load, with deprecation warnings.
+- `ClusterIP` Services are dialled on their `port`, not `targetPort`.
 - RBAC needs `list` + `watch` on `nodes`, `services` and `discovery.k8s.io/endpointslices`. Apply it **before** rolling out v2.
+- The image is distroless and runs as UID 65532: mounted files must be readable by it, and `/root/.kube/config` no longer works.
 - An admin HTTP server opens on `127.0.0.1:9090` by default (`settings.admin.address: ""` disables it).
 - Per-connection `Info` log lines are replaced by one JSON access-log record per connection.
 - The stop timeout must cover the drain (48s by default).
 
-Run `nautiluslb --validate --config config.yaml` with the v2 binary before switching. The full checklist, a before/after example and rollback notes are in [docs/upgrading-v2.md](docs/upgrading-v2.md).
-
-🔝 [back to top](#nautiluslb)
-
-&nbsp;
-
-### Upgrading to v1.0.1
-
-Coming from v1.0.0 or earlier, apply these v1.0.1 changes as well; v1.0.1 closed a traffic-hijacking hole where any enabled Service with a matching port name, in any namespace, joined a listener's pool:
-
-1. Every Service must name its configurations in `nautiluslb.cloudresty.io/configurations` (in addition to `nautiluslb.cloudresty.io/enabled: "true"`).
-2. Every configuration must list its `namespaces`; omitting them is an error (`["*"]` opts into cluster-wide discovery deliberately).
-3. The configuration is parsed strictly: unknown keys, duplicate names, conflicting listeners and malformed values stop startup with exit status 1.
-4. `ClusterIP` Services are dialled on their `port`, not `targetPort`.
-5. The image runs as non-root UID 65532 with no shell; mounted files must be readable by that UID, and `/root/.kube/config` no longer works.
+Run `nautiluslb --validate --config config.yaml` with the v2 binary before switching. Roll back only with your v1.0.0 config file: v1.0.0 silently ignores keys it does not know, so it would run a v2 file without its namespace restrictions. The full table, before/after examples, the checklist and rollback notes are in [docs/upgrading-v2.md](docs/upgrading-v2.md).
 
 🔝 [back to top](#nautiluslb)
 
