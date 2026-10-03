@@ -8,7 +8,7 @@ import (
 )
 
 // Duration is a time.Duration that unmarshals from "30s"/"1m" strings and,
-// for v1 compatibility, from bare integers meaning seconds (deprecated; Parse
+// for v0.x compatibility, from bare integers meaning seconds (deprecated; Parse
 // records a warning for those).
 type Duration time.Duration
 

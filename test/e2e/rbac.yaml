@@ -1,4 +1,4 @@
-# Least-privilege RBAC for NautilusLB v2, the same grants as
+# Least-privilege RBAC for NautilusLB, the same grants as
 # deploy/kubernetes/rbac-cluster.yaml + rbac-namespaced.yaml.
 #
 # NautilusLB runs informers (list + watch, never get or any write) on:

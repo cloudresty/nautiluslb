@@ -32,7 +32,7 @@ const healthNone = "    health: {type: none}\n"
 
 // doc renders a configuration document. drain is settings.drain.timeout.
 func doc(drain string, blocks ...string) string {
-	return fmt.Sprintf(`apiVersion: nautiluslb.cloudresty.io/v2
+	return fmt.Sprintf(`apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 settings:
   drain: {readinessDelay: 10ms, timeout: %s}

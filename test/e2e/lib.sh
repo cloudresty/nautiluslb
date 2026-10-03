@@ -190,7 +190,7 @@ await_answer() {
 # wait_fixtures waits for every workload, then for every fixture to answer on
 # NodeIP:NodePort.
 #
-# TRAP (found by mutation testing in v1.0.1): if NautilusLB starts while a
+# TRAP (found by mutation testing): if NautilusLB starts while a
 # wrongly bound backend's NodePort is not programmed yet, that backend fails its
 # first dial, is ejected, and a hijack goes unnoticed for the few seconds the
 # requests take. So no NautilusLB starts before every fixture answers here.
@@ -233,13 +233,13 @@ wait_fixtures() {
 # NautilusLB
 #
 
-# nlb_config_header [pprof] prints the common v2 header. Cases append their
+# nlb_config_header [pprof] prints the common config header. Cases append their
 # `configurations:` entries.
 nlb_config_header() {
 	local pprof="false"
 	[[ "${1:-}" == "pprof" ]] && pprof="true"
 	cat <<EOF
-apiVersion: nautiluslb.cloudresty.io/v2
+apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 settings:
   logLevel: info

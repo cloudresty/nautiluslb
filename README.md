@@ -20,7 +20,7 @@ NautilusLB is an open-source Layer 4 load balancer for the edge of a Kubernetes 
 - [Deployment Options](#deployment-options)
 - [Monitoring](#monitoring)
 - [High Availability](#high-availability)
-- [Upgrading to v2.0.0](#upgrading-to-v200)
+- [Upgrading to v1.0.0](#upgrading-to-v100)
 - [Verifying Releases](#verifying-releases)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
@@ -147,7 +147,7 @@ config:
 
 ```bash
 helm install nautiluslb oci://ghcr.io/cloudresty/charts/nautiluslb \
-  --version 2.0.0 \
+  --version 1.0.0 \
   --namespace nautiluslb --create-namespace \
   --values values.yaml
 ```
@@ -186,10 +186,10 @@ NautilusLB reads one YAML file: `config.yaml` in the working directory by defaul
 nautiluslb --validate --config config.yaml
 ```
 
-A minimal v2 configuration:
+A minimal configuration:
 
 ```yaml
-apiVersion: nautiluslb.cloudresty.io/v2
+apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 
 settings:
@@ -316,7 +316,7 @@ docker run --detach \
   --publish 443:443 \
   --publish 10.0.0.10:27017:27017 \
   --publish 127.0.0.1:9090:9090 \
-  cloudresty/nautiluslb:v2.0.0
+  cloudresty/nautiluslb:v1.0.0
 ```
 
 - Set `settings.kubernetes.kubeconfig: /nautiluslb/kubeconfig` in `config.yaml`. Use a dedicated, [least-privilege](#kubernetes-rbac) ServiceAccount token kubeconfig, never an administrator's `~/.kube/config`.
@@ -369,22 +369,22 @@ On `SIGTERM`, `/readyz` turns 503 for `settings.drain.readinessDelay` (3s) befor
 
 &nbsp;
 
-## Upgrading to v2.0.0
+## Upgrading to v1.0.0
 
-v2.0.0 follows v1.0.0 (published images up to `v0.0.11`). It closes a traffic-hijacking hole, so **every deployment needs edits to both `config.yaml` and the annotated Services**:
+v1.0.0 is the first stable release and follows the v0.0.x series (published images up to `v0.0.11`). It closes a traffic-hijacking hole, so **every deployment needs edits to both `config.yaml` and the annotated Services**:
 
-- **Services must name their configurations.** Add `nautiluslb.cloudresty.io/configurations: "<name>[,<name>...]"` next to `nautiluslb.cloudresty.io/enabled: "true"`. In v1.0.0, any enabled Service with a matching port name, in any namespace, joined a listener's pool. This annotation is ignored by v1.0.0, so apply it first.
+- **Services must name their configurations.** Add `nautiluslb.cloudresty.io/configurations: "<name>[,<name>...]"` next to `nautiluslb.cloudresty.io/enabled: "true"`. In v0.0.x, any enabled Service with a matching port name, in any namespace, joined a listener's pool. This annotation is ignored by v0.0.x, so apply it first.
 - **Every configuration needs `namespaces`.** An empty namespace no longer means "everywhere"; `["*"]` opts into cluster-wide discovery deliberately.
-- `apiVersion: nautiluslb.cloudresty.io/v2` and `kind: Config` are **required** at the top of `config.yaml`, and the file is parsed strictly: unknown keys and invalid values stop startup.
+- `apiVersion: nautiluslb.cloudresty.io/v1` and `kind: Config` are **required** at the top of `config.yaml`, and the file is parsed strictly: unknown keys and invalid values stop startup.
 - `settings.kubeconfigPath` becomes `settings.kubernetes.kubeconfig`, `requestTimeout: 5` becomes `dialTimeout: 5s` and `namespace: x` becomes `namespaces: [x]`. The old keys still load, with deprecation warnings.
 - `ClusterIP` Services are dialled on their `port`, not `targetPort`.
-- RBAC needs `list` + `watch` on `nodes`, `services` and `discovery.k8s.io/endpointslices`. Apply it **before** rolling out v2.
+- RBAC needs `list` + `watch` on `nodes`, `services` and `discovery.k8s.io/endpointslices`. Apply it **before** rolling out v1.0.0.
 - The image is distroless and runs as UID 65532: mounted files must be readable by it, and `/root/.kube/config` no longer works.
 - An admin HTTP server opens on `127.0.0.1:9090` by default (`settings.admin.address: ""` disables it).
 - Per-connection `Info` log lines are replaced by one JSON access-log record per connection.
 - The stop timeout must cover the drain (48s by default).
 
-Run `nautiluslb --validate --config config.yaml` with the v2 binary before switching. Roll back only with your v1.0.0 config file: v1.0.0 silently ignores keys it does not know, so it would run a v2 file without its namespace restrictions. The full table, before/after examples, the checklist and rollback notes are in [docs/upgrading-v2.md](docs/upgrading-v2.md).
+Run `nautiluslb --validate --config config.yaml` with the v1.0.0 binary before switching. Roll back only with your v0.x config file: v0.0.x silently ignores keys it does not know, so it would run a v1.0.0 file without its namespace restrictions. The full table, before/after examples, the checklist and rollback notes are in [docs/upgrading-v1.md](docs/upgrading-v1.md).
 
 🔝 [back to top](#nautiluslb)
 
@@ -395,7 +395,7 @@ Run `nautiluslb --validate --config config.yaml` with the v2 binary before switc
 Release artifacts (the binaries via `sha256sums.txt`, the container image and the Helm chart) are signed with Sigstore cosign keyless signing by this repository's release workflow. Verify them before deploying:
 
 ```bash
-VERSION=v2.0.0
+VERSION=v1.0.0
 ISSUER=https://token.actions.githubusercontent.com
 IDENTITY="https://github.com/cloudresty/nautiluslb/.github/workflows/release.yaml@refs/tags/${VERSION}"
 
@@ -432,7 +432,7 @@ Pin the image by digest (`cloudresty/nautiluslb@sha256:...`) in production. Veri
 | [docs/metrics.md](docs/metrics.md) | scrape and alert on NautilusLB |
 | [docs/operations.md](docs/operations.md) | run it: signals, reload, drain, sizing, kernel settings, troubleshooting |
 | [docs/ha.md](docs/ha.md) | run two or more instances behind a floating IP |
-| [docs/upgrading-v2.md](docs/upgrading-v2.md) | move a v1.x deployment to v2.0.0 |
+| [docs/upgrading-v1.md](docs/upgrading-v1.md) | move a v0.0.x deployment to v1.0.0 |
 
 🔝 [back to top](#nautiluslb)
 

@@ -103,7 +103,7 @@ The manifests are [`deploy/kubernetes/rbac-cluster.yaml`](../deploy/kubernetes/r
 Release artifacts are signed with Sigstore cosign keyless signing by the `release.yaml` workflow of `cloudresty/nautiluslb`. The signed artifacts are the binaries (through `sha256sums.txt`), the container image on Docker Hub and the Helm chart on GHCR. Verify them before deploying:
 
 ```bash
-VERSION=v2.0.0
+VERSION=v1.0.0
 ISSUER=https://token.actions.githubusercontent.com
 IDENTITY="https://github.com/cloudresty/nautiluslb/.github/workflows/release.yaml@refs/tags/${VERSION}"
 

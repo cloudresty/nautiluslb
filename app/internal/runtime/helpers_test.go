@@ -112,7 +112,7 @@ func udpEchoBackend(t *testing.T) int {
 	return c.LocalAddr().(*net.UDPAddr).Port
 }
 
-const header = `apiVersion: nautiluslb.cloudresty.io/v2
+const header = `apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 settings:
   drain: {readinessDelay: 10ms, timeout: %s}

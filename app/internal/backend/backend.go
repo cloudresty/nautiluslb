@@ -1,4 +1,4 @@
-// Package backend holds the v2 backend model: an immutable Endpoint produced by
+// Package backend holds the backend model: an immutable Endpoint produced by
 // discovery, a Backend carrying its lock-free runtime state (health, active
 // connections, ejection hold) and an immutable Snapshot handed to balancers.
 package backend

@@ -8,7 +8,7 @@ use the Helm chart (`deploy/helm/nautiluslb`) or the raw manifests
 | Path | Owner and mode | Purpose |
 |---|---|---|
 | `/usr/local/bin/nautiluslb` | `root:root 0755` | binary |
-| `/etc/nautiluslb/config.yaml` | `root:root 0644` | configuration (`apiVersion: nautiluslb.cloudresty.io/v2`) |
+| `/etc/nautiluslb/config.yaml` | `root:root 0644` | configuration (`apiVersion: nautiluslb.cloudresty.io/v1`) |
 | `/etc/nautiluslb/kubeconfig` | `root:nautiluslb 0640` | cluster credentials |
 | `/etc/systemd/system/nautiluslb.service` | `root:root 0644` | the unit in this directory |
 
@@ -21,7 +21,7 @@ Release assets are `nautiluslb-linux-amd64`, `nautiluslb-linux-arm64`,
 signed keyless by the release workflow. Verification needs cosign v3.
 
 ```bash
-VERSION=v2.0.0
+VERSION=v1.0.0
 ARCH=amd64            # or arm64
 BASE=https://github.com/cloudresty/nautiluslb/releases/download/${VERSION}
 

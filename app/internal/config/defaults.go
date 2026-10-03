@@ -30,7 +30,7 @@ func (c *Config) seedBools() {
 }
 
 // ApplyDefaults fills every unset field with its default and maps the
-// deprecated v1 aliases onto their replacements. It is idempotent.
+// deprecated v0.x aliases onto their replacements. It is idempotent.
 func (c *Config) ApplyDefaults() {
 	if !c.seeded {
 		c.seedBools()
@@ -148,7 +148,7 @@ func (c *Configuration) applyDefaults() {
 	}
 }
 
-// Deprecations lists the deprecated constructs in the configuration: v1 key
+// Deprecations lists the deprecated constructs in the configuration: v0.x key
 // aliases still in use and bare-integer durations. Safe to call at any stage.
 func (c *Config) Deprecations() []string {
 	out := append([]string(nil), c.parseWarning...)

@@ -1,4 +1,4 @@
-// Package config loads, defaults and validates the NautilusLB v2 configuration.
+// Package config loads, defaults and validates the NautilusLB configuration.
 //
 // Pipeline: Load = read + Parse (strict) + ApplyDefaults + ApplyEnv + Validate.
 //
@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	APIVersion = "nautiluslb.cloudresty.io/v2"
+	APIVersion = "nautiluslb.cloudresty.io/v1"
 	Kind       = "Config"
 
 	// ServiceEnabledAnnotation marks a Service as a NautilusLB backend.
@@ -72,7 +72,7 @@ type Settings struct {
 	Drain      DrainSettings      `yaml:"drain"`
 	Reload     ReloadSettings     `yaml:"reload"`
 
-	// Deprecated v1 alias for Kubernetes.Kubeconfig.
+	// Deprecated v0.x alias for Kubernetes.Kubeconfig.
 	KubeconfigPath string `yaml:"kubeconfigPath,omitempty"`
 }
 

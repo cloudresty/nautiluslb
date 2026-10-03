@@ -1,4 +1,4 @@
-# NautilusLB v2 raw manifests: mirrors the Helm chart (deploy/helm/nautiluslb)
+# NautilusLB raw manifests: mirrors the Helm chart (deploy/helm/nautiluslb)
 # with the ServiceMonitor enabled. Not in the default kustomization, so
 # deploy/check-drift.sh does not compare it; keep it in step by hand.
 #

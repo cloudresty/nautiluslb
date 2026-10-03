@@ -40,8 +40,8 @@ func TestValidateMatrix(t *testing.T) {
 	}{
 		// rule 1
 		{"r1 valid", func(*Config) {}, ""},
-		{"r1 v1 file", func(x *Config) { x.APIVersion, x.Kind = "", "" }, "docs/upgrading-v2.md"},
-		{"r1 wrong apiVersion", func(x *Config) { x.APIVersion = "nautiluslb.cloudresty.io/v1" }, "apiVersion must be"},
+		{"r1 legacy v0.x file", func(x *Config) { x.APIVersion, x.Kind = "", "" }, "docs/upgrading-v1.md"},
+		{"r1 wrong apiVersion", func(x *Config) { x.APIVersion = "nautiluslb.cloudresty.io/v0" }, "apiVersion must be"},
 		{"r1 wrong kind", func(x *Config) { x.Kind = "Other" }, "kind must be"},
 		{"r1 kind missing", func(x *Config) { x.Kind = "" }, "kind must be"},
 		// rule 2
@@ -49,7 +49,7 @@ func TestValidateMatrix(t *testing.T) {
 		{"r2 route bad name", tlsOn(func(c *Configuration) { c.TLS.Routes[0].Name = "a/b" }), "tls.routes[0] (a/b): invalid name"},
 		{"r2 route empty name", tlsOn(func(c *Configuration) { c.TLS.Routes[0].Name = "" }), "'name' cannot be empty"},
 		{"r2 duplicate route", tlsOn(func(c *Configuration) { c.TLS.Routes[1].Name = "web" }), "duplicate route name"},
-		// rule 3 (v1 listener rules covered in config_test.go)
+		// rule 3 (basic listener rules covered in config_test.go)
 		{"r3 valid tcp+udp same port", func(x *Config) {
 			a, b := validConfiguration(), udpConfiguration()
 			a.ListenerAddress, b.ListenerAddress = ":53", ":53"

@@ -1,7 +1,7 @@
 # Fixtures for the NautilusLB performance suite (test/perf/run.sh).
 #
-# Two NodePort Services in namespace perf-apps, both bound to NautilusLB v2
-# (enabled + configurations annotations) and v1 (enabled only; v1 ignores the
+# Two NodePort Services in namespace perf-apps, both bound to NautilusLB v1.0.0
+# (enabled + configurations annotations) and v0.0.11 (enabled only; v0.0.11 ignores the
 # configurations annotation and matches on the port name):
 #
 #   iperf      iperf3 server, port "iperf"      -> config perf_iperf (:5201)
@@ -49,7 +49,7 @@ subjects:
     name: nautiluslb
     namespace: nautiluslb
 ---
-# v2 needs list/watch on services and endpointslices; v1 needs list on services.
+# v1.0.0 needs list/watch on services and endpointslices; v0.0.11 needs list on services.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:

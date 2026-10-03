@@ -7,13 +7,13 @@
 # on the "kind" network, outside the cluster, the way it is deployed in
 # production. NautilusLB authenticates with a token for the least-privilege
 # ServiceAccount in rbac.yaml, proving the documented RBAC is sufficient.
-# Each case in cases/<name>.sh starts its own NautilusLB with its own v2 config
+# Each case in cases/<name>.sh starts its own NautilusLB with its own config
 # and drives traffic from a client container on the same network (lib.sh).
 #
 # Cases (default: all but soak, in this order):
-#   strict     invalid configurations (v1 file, unknown key, no namespaces) exit 1
+#   strict     invalid configurations (legacy v0.x file, unknown key, no namespaces) exit 1
 #   rbac       the ServiceAccount can do exactly what rbac.yaml says
-#   binding    v1.0.1 hijack regression: only the bound Service gets traffic
+#   binding    hijack regression (fixed in v1.0.0): only the bound Service gets traffic
 #   metrics    /metrics counters and build_info, /readyz
 #   balancing  least_conn spreads by active connections, source_ip_hash is sticky
 #   proxy      PROXY protocol v1 and v2 to the backend carry the client address

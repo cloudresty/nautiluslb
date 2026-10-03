@@ -1,4 +1,4 @@
-# NautilusLB v2 raw manifests: mirrors the Helm chart defaults
+# NautilusLB raw manifests: mirrors the Helm chart defaults
 # (deploy/helm/nautiluslb); `bash deploy/check-drift.sh` checks them.
 #
 # Least-privilege discovery (the default): ONE Role + RoleBinding per namespace

@@ -1,4 +1,4 @@
-# NautilusLB v2 raw manifests: a readable reference set that mirrors the Helm
+# NautilusLB raw manifests: a readable reference set that mirrors the Helm
 # chart defaults (deploy/helm/nautiluslb). `bash deploy/check-drift.sh` compares these files
 # with `helm template` output; change the chart and these together.
 #

@@ -1,4 +1,4 @@
-# NautilusLB v2 example configuration. Copy to config.yaml (git-ignored) and adjust.
+# NautilusLB example configuration. Copy to config.yaml (git-ignored) and adjust.
 #
 # A Kubernetes Service joins a pool only when it carries BOTH annotations:
 #
@@ -9,8 +9,8 @@
 # route of a tls configuration. Optional: nautiluslb.cloudresty.io/weight: "1".."100".
 #
 # Unknown keys are rejected at startup. Durations are strings ("30s", "5m").
-# Upgrading from v1: see docs/upgrading-v2.md.
-apiVersion: nautiluslb.cloudresty.io/v2
+# Upgrading from v0.x (v0.0.x releases): see docs/upgrading-v1.md.
+apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 
 settings:

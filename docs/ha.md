@@ -41,7 +41,7 @@ Two hosts, `lb-a` (`10.0.0.11`) and `lb-b` (`10.0.0.12`), share the VIP `203.0.1
 ### NautilusLB settings for a VRRP pair
 
 ```yaml
-apiVersion: nautiluslb.cloudresty.io/v2
+apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 settings:
   admin:

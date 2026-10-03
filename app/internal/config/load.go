@@ -87,7 +87,7 @@ var durationKeys = map[string]bool{
 }
 
 // scanBareDurations records a deprecation for every duration key written as a
-// bare integer (v1 style seconds).
+// bare integer (v0.x style seconds).
 func scanBareDurations(n *yaml.Node, path string, out *[]string) {
 	switch n.Kind {
 	case yaml.DocumentNode:

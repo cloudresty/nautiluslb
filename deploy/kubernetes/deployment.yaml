@@ -1,4 +1,4 @@
-# NautilusLB v2 raw manifests: mirrors the Helm chart defaults
+# NautilusLB raw manifests: mirrors the Helm chart defaults
 # (deploy/helm/nautiluslb); `bash deploy/check-drift.sh` checks them.
 #
 # Two replicas behind the LoadBalancer Service. Replicas are independent: each
@@ -17,7 +17,7 @@ metadata:
   labels:
     app.kubernetes.io/name: nautiluslb
     app.kubernetes.io/instance: nautiluslb
-    app.kubernetes.io/version: "2.0.0"
+    app.kubernetes.io/version: "1.0.0"
 spec:
   replicas: 2
   revisionHistoryLimit: 5
@@ -35,7 +35,7 @@ spec:
       labels:
         app.kubernetes.io/name: nautiluslb
         app.kubernetes.io/instance: nautiluslb
-        app.kubernetes.io/version: "2.0.0"
+        app.kubernetes.io/version: "1.0.0"
     spec:
       serviceAccountName: nautiluslb
       terminationGracePeriodSeconds: 48
@@ -69,7 +69,7 @@ spec:
               app.kubernetes.io/instance: nautiluslb
       containers:
         - name: nautiluslb
-          image: cloudresty/nautiluslb:v2.0.0
+          image: cloudresty/nautiluslb:v1.0.0
           imagePullPolicy: IfNotPresent
           # The image ENTRYPOINT is the binary; only flags are passed.
           args:

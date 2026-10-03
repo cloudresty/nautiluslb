@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # strict: invalid configurations stop startup with exit 1 and the exact log
 # message "Failed to load configuration" (docs/configuration.md#loading-rules).
-# A v1 file additionally carries the upgrade hint.
+# A legacy v0.x file additionally carries the upgrade hint.
 
 dir="$(case_dir strict)"
 
@@ -27,7 +27,7 @@ expect_rejected() {
 	docker rm -f "${NLB}" >/dev/null
 }
 
-# A v1.0.1 file: no apiVersion/kind.
+# A legacy v0.x file: no apiVersion/kind.
 cat >"${dir}/config.yaml" <<'EOF'
 settings:
   kubeconfigPath: /nautiluslb/kubeconfig
@@ -37,7 +37,7 @@ configurations:
     backendPortName: http
     namespaces: [e2e-apps]
 EOF
-expect_rejected "a v1 file" "this looks like a v1 file (no apiVersion)"
+expect_rejected "a legacy v0.x file" "this looks like a v0.x config file (no apiVersion)"
 
 {
 	nlb_config_header

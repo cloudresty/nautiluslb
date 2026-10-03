@@ -105,7 +105,7 @@ admin:
   # NLB_ADMIN_ADDRESS env override) instead of admin.host. IPv4 pods only.
   bindPodIP: false
 
-# -- The NautilusLB configuration file (apiVersion nautiluslb.cloudresty.io/v2,
+# -- The NautilusLB configuration file (apiVersion nautiluslb.cloudresty.io/v1,
 # kind Config), rendered into a ConfigMap and mounted at
 # /etc/nautiluslb/config.yaml. Unknown keys are rejected by NautilusLB at
 # startup. Schema and every field: app/config.example.yaml in the repository.
@@ -116,7 +116,7 @@ admin:
 # listed namespace, or a ClusterRole as soon as any configuration lists "*".
 # Every listed namespace must exist when the chart is installed.
 config:
-  apiVersion: nautiluslb.cloudresty.io/v2
+  apiVersion: nautiluslb.cloudresty.io/v1
   kind: Config
   settings:
     logLevel: info

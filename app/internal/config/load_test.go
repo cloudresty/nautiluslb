@@ -35,7 +35,7 @@ func writeTemp(t *testing.T, content string) string {
 	return f
 }
 
-const header = "apiVersion: nautiluslb.cloudresty.io/v2\nkind: Config\n"
+const header = "apiVersion: nautiluslb.cloudresty.io/v1\nkind: Config\n"
 
 const validDoc = header + `configurations:
   - name: web
@@ -45,7 +45,7 @@ const validDoc = header + `configurations:
 `
 
 func TestLoadConfig(t *testing.T) {
-	// v2 file using the deprecated aliases: still loads and is mapped
+	// current file using the deprecated v0.x aliases: still loads and is mapped
 	f := writeTemp(t, header+`settings:
   kubeconfigPath: "/test/path"
 configurations:
@@ -145,13 +145,13 @@ func TestLoadConfigRejects(t *testing.T) {
 }
 
 func TestLoadTestdata(t *testing.T) {
-	t.Run("v1 rejected with upgrade hint", func(t *testing.T) {
-		_, err := Load(filepath.Join("testdata", "v1.yaml"))
-		expectErr(t, err, "docs/upgrading-v2.md")
-		expectErr(t, err, "v1 file")
+	t.Run("legacy v0.x rejected with upgrade hint", func(t *testing.T) {
+		_, err := Load(filepath.Join("testdata", "legacy-v0.yaml"))
+		expectErr(t, err, "docs/upgrading-v1.md")
+		expectErr(t, err, "v0.x config file")
 	})
 	t.Run("minimal", func(t *testing.T) {
-		cfg, err := Load(filepath.Join("testdata", "minimal-v2.yaml"))
+		cfg, err := Load(filepath.Join("testdata", "minimal.yaml"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -160,7 +160,7 @@ func TestLoadTestdata(t *testing.T) {
 		}
 	})
 	t.Run("full", func(t *testing.T) {
-		cfg, err := Load(filepath.Join("testdata", "full-v2.yaml"))
+		cfg, err := Load(filepath.Join("testdata", "full.yaml"))
 		if err != nil {
 			t.Fatal(err)
 		}

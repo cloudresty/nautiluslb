@@ -9,7 +9,7 @@ NautilusLB is a Layer 4 load balancer for TCP, TLS passthrough (SNI routing) and
 | [metrics.md](metrics.md) | scrape and alert on NautilusLB: every metric, its labels, cardinality and example alerts |
 | [operations.md](operations.md) | run it: signals, reload, drain, sizing, kernel settings, troubleshooting by access-log result |
 | [ha.md](ha.md) | run two or more instances behind a floating IP (keepalived/VRRP, kube-vip) |
-| [upgrading-v2.md](upgrading-v2.md) | move a v1.x deployment to v2.0.0 |
+| [upgrading-v1.md](upgrading-v1.md) | move a v0.0.x deployment to v1.0.0 |
 
 ## Quick start
 

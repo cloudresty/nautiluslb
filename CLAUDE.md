@@ -5,7 +5,7 @@ Layer 4 load balancer (TCP, TLS passthrough with SNI routing, UDP) that runs at 
 - Module `github.com/cloudresty/nautiluslb` in `app/` (binary, no `/v2` suffix) · Go 1.27.1 · k8s.io trio v0.37.1 · YAML via `go.yaml.in/yaml/v3` · Prometheus `client_golang` · logging `cloudresty/emit` (>= v1.2.6, never downgrade: v1.2.5 crashed on long error strings).
 - Follows the Cloudresty backend **Service Blueprint** and **Naming Conventions** (standards pointer in ~/.claude/GO.md), with flat `internal/<capability>` packages rather than domain/application/adapters layers.
 - Branching: feature -> PR -> `develop`; `develop` -> PR -> `main`; tag `vX.Y.Z` on `main` triggers the release.
-- User docs live in `docs/` (configuration, security, metrics, operations, ha, upgrading-v2). Keep them, `app/config.example.yaml` and the Helm chart in step with code changes.
+- User docs live in `docs/` (configuration, security, metrics, operations, ha, upgrading-v1). Keep them, `app/config.example.yaml` and the Helm chart in step with code changes.
 
 ## Entry point
 
@@ -13,7 +13,7 @@ Layer 4 load balancer (TCP, TLS passthrough with SNI routing, UDP) that runs at 
 
 ## Packages (`app/internal/`)
 
-- **config**: v2 types, defaults (`defaults.go`), `NLB_*` env overrides (`env.go`), strict load (`load.go`), validation with all errors joined (`validate.go`), annotation constants, pool specs.
+- **config**: schema types (`apiVersion: nautiluslb.cloudresty.io/v1`), defaults (`defaults.go`), `NLB_*` env overrides (`env.go`), strict load (`load.go`), validation with all errors joined (`validate.go`), annotation constants, pool specs.
 - **backend**: immutable `Endpoint` from discovery + `Backend` with lock-free runtime state (health, active count, cap).
 - **balancer**: pickers (round_robin, least_conn, source_ip_hash, random_two_choices), weights, slow start; lock-free hot path.
 - **health**: active tcp/http probers and the rise/fall checker; passive ejection hold.

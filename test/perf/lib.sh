@@ -20,7 +20,7 @@ CLIENT="nautiluslb-perf-client"
 NLB_PREFIX="nautiluslb-perf"
 LOAD="${NLB_PREFIX}-load"
 
-V1_IMAGE="cloudresty/nautiluslb:v0.0.11@sha256:961e9497ee5f5a6a6dd63585c2b817448f5a1ef35b08f59222778a53bc9480cf"
+V0_IMAGE="cloudresty/nautiluslb:v0.0.11@sha256:961e9497ee5f5a6a6dd63585c2b817448f5a1ef35b08f59222778a53bc9480cf"
 HAPROXY_IMAGE="haproxy:3.2@sha256:e2b397cdbd612221cf79dec325690139d00a78b4ce4eae065530fbc81e1f6192"
 IPERF_IMAGE="networkstatic/iperf3:latest@sha256:bc267517f534d9f7cced2669f325799a1fd7fe1d5953c2ca2c6ea1db61affa08"
 export HOLDER_IMAGE="gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3"
@@ -80,7 +80,7 @@ load_env() {
 # Proxies under test. Only one runs at a time so they never compete for CPU.
 #
 
-PROXIES=("${NLB_PREFIX}-v2" "${NLB_PREFIX}-v1" "${NLB_PREFIX}-haproxy" "${NLB_PREFIX}-haproxy-splice")
+PROXIES=("${NLB_PREFIX}-nlb" "${NLB_PREFIX}-v0" "${NLB_PREFIX}-haproxy" "${NLB_PREFIX}-haproxy-splice")
 
 stop_proxies() { docker rm -f "${PROXIES[@]}" >/dev/null 2>&1 || true; }
 
@@ -91,8 +91,8 @@ start_target() {
 	stop_proxies
 	case "${t}" in
 		direct) return 0 ;;
-		v2) start_v2 "${alog}" ;;
-		v1) start_v1 ;;
+		nlb) start_nlb "${alog}" ;;
+		v0) start_v0 ;;
 		haproxy) start_haproxy haproxy "" ;;
 		haproxy-splice) start_haproxy haproxy-splice "    option splice-auto" ;;
 		*) fail "unknown target ${t}" ;;
@@ -100,8 +100,8 @@ start_target() {
 	await_answer "${t}: request through the proxy" '^64$' \
 		cexec curl -s --max-time 2 -o /dev/null -w '%{size_download}' "http://$(addr "${t}" http)/small"
 	# No probe of the iperf port: iperf3's server serves one client at a time,
-	# and v1 does not forward a client's FIN (fixed in v1.0.1), so a probe
-	# connection through v1 would leave the server busy with a dead test.
+	# and v0 does not forward a client's FIN (fixed in v1.0.0), so a probe
+	# connection through v0 would leave the server busy with a dead test.
 }
 
 # addr TARGET http|iperf prints host:port.
@@ -114,12 +114,12 @@ addr() {
 	esac
 }
 
-start_v2() {
+start_nlb() {
 	local alog="$1" enabled=true dir
 	[[ "${alog}" == "off" ]] && enabled=false
-	dir="$(case_dir "v2-${alog}")"
+	dir="$(case_dir "nlb-${alog}")"
 	cat >"${dir}/config.yaml" <<EOF
-apiVersion: nautiluslb.cloudresty.io/v2
+apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 settings:
   logLevel: info
@@ -140,16 +140,16 @@ configurations:
     backendPortName: iperf
     namespaces: [perf-apps]
 EOF
-	# V2_DOCKER_ARGS: extra docker run args, e.g. "--user 0" (see README, pipes).
+	# NLB_DOCKER_ARGS: extra docker run args, e.g. "--user 0" (see README, pipes).
 	# shellcheck disable=SC2086
-	nlb_start "${NLB_PREFIX}-v2" "${dir}" "${NET_OPTS[@]:2}" ${V2_DOCKER_ARGS:-}
-	nlb_wait_ready "${NLB_PREFIX}-v2"
+	nlb_start "${NLB_PREFIX}-nlb" "${dir}" "${NET_OPTS[@]:2}" ${NLB_DOCKER_ARGS:-}
+	nlb_wait_ready "${NLB_PREFIX}-nlb"
 }
 
-start_v1() {
+start_v0() {
 	local dir
-	dir="$(case_dir v1)"
-	# v1 schema: no apiVersion, settings.kubeconfigPath, one namespace per
+	dir="$(case_dir v0)"
+	# legacy v0.x schema: no apiVersion, settings.kubeconfigPath, one namespace per
 	# configuration, read from ./config.yaml (WORKDIR /nautiluslb).
 	cat >"${dir}/config.yaml" <<EOF
 settings:
@@ -165,11 +165,11 @@ configurations:
     namespace: perf-apps
 EOF
 	chmod 644 "${dir}/config.yaml"
-	printf '%s\n' "${NLB_PREFIX}-v1" >>"${WORK}/containers"
-	docker run --detach --name "${NLB_PREFIX}-v1" "${NET_OPTS[@]}" \
+	printf '%s\n' "${NLB_PREFIX}-v0" >>"${WORK}/containers"
+	docker run --detach --name "${NLB_PREFIX}-v0" "${NET_OPTS[@]}" \
 		--volume "${dir}/config.yaml:/nautiluslb/config.yaml:ro" \
 		--volume "${WORK}/kubeconfig:/nautiluslb/kubeconfig:ro" \
-		"${V1_IMAGE}" >/dev/null
+		"${V0_IMAGE}" >/dev/null
 }
 
 # start_haproxy NAME EXTRA_DEFAULTS_LINE
@@ -247,7 +247,7 @@ fortio_summary() {
 # Process observation
 #
 
-# metrics_of NAME > file: /metrics of a v2 container.
+# metrics_of NAME > file: /metrics of an nlb container.
 metrics_of() { cexec curl -sS --max-time 5 "http://$(container_ip "$1"):9090/metrics"; }
 
 goroutines_of() {

@@ -4,25 +4,25 @@
 #
 # Compares four paths to the same kind NodePort backends:
 #   direct   client -> NodeIP:NodePort
-#   v2       client -> NautilusLB (image built from this repository)
-#   v1       client -> NautilusLB v0.0.11 (published image, v1 config)
+#   nlb      client -> NautilusLB v1.0.0 (image built from this repository)
+#   v0       client -> NautilusLB v0.0.11 (published image, legacy v0.x config)
 #   haproxy  client -> HAProxy 3.2 (mode tcp, static servers)
 #
 # Phases (PHASES, comma-separated; default all but soak, in this order):
 #   setup       kind cluster, fixtures, image, client container
-#   throughput  iperf3 1 and 8 streams; v2 splice counter
+#   throughput  iperf3 1 and 8 streams; nlb splice counter
 #   rate        new connection per request (fortio keepalive=false), -c 64/256
 #   ratestd     the same at -c 64 with fortio -stdclient (see phase_ratestd)
 #   latency     reused connections, fortio -c 64 -qps 5000
 #   bigfile     1 MiB GETs on reused connections, -c 16
-#   alog        v2 rate -c 64 with the access log on vs off
+#   alog        nlb rate -c 64 with the access log on vs off
 #   idle        10k idle connections: RSS, goroutines, fds at 0 / 10k / after close
-#   pipes       v2 splice pipe sizes and iperf3 -P 1 with 1000 idle connections held
-#   profile     v2 CPU profiles under rate -c 64 and iperf3 -P 8
-#   soak        SOAK_SECONDS (900) of -c 256 churn through v2, sampled every 60s
+#   pipes       nlb splice pipe sizes and iperf3 -P 1 with 1000 idle connections held
+#   profile     nlb CPU profiles under rate -c 64 and iperf3 -P 8
+#   soak        SOAK_SECONDS (900) of -c 256 churn through nlb, sampled every 60s
 #   cleanup     remove containers and the cluster
 #
-# Environment: PHASES, TARGETS (default "direct v2 v1 haproxy haproxy-splice"), KEEP=1
+# Environment: PHASES, TARGETS (default "direct nlb v0 haproxy haproxy-splice"), KEEP=1
 # (do not clean up at the end), PERF_WORK (work dir), OUT (results dir),
 # DURATION (fortio seconds, default 30), IPERF_SECONDS (20), IDLE_CONNS (10000),
 # SOAK_SECONDS (900).
@@ -35,7 +35,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
 for cmd in docker kind kubectl openssl jq go perl; do need "${cmd}"; done
 
 PHASES="${PHASES:-setup,throughput,rate,ratestd,latency,bigfile,alog,idle,pipes,profile}"
-TARGETS="${TARGETS:-direct v2 v1 haproxy haproxy-splice}"
+TARGETS="${TARGETS:-direct nlb v0 haproxy haproxy-splice}"
 DURATION="${DURATION:-30}"
 IPERF_SECONDS="${IPERF_SECONDS:-20}"
 IDLE_CONNS="${IDLE_CONNS:-10000}"
@@ -74,7 +74,7 @@ phase_throughput() {
 		log "throughput: ${t}"
 		start_target "${t}"
 		before=""
-		[[ "${t}" == v2 ]] && before="$(metrics_of "${NLB_PREFIX}-v2" | awk '/^nautiluslb_pipe_mode_total/{print}')"
+		[[ "${t}" == nlb ]] && before="$(metrics_of "${NLB_PREFIX}-nlb" | awk '/^nautiluslb_pipe_mode_total/{print}')"
 		for p in 1 8; do
 			j="${OUT}/iperf-${t}-P${p}.json"
 			iperf_run "${t}" "${p}" "${IPERF_SECONDS}" >"${j}" || true
@@ -82,12 +82,12 @@ phase_throughput() {
 			record "${t}" "iperf_P${p}" retransmits "$(jq -r '.end.sum_sent.retransmits // "n/a"' "${j}")"
 			sleep 2
 		done
-		if [[ "${t}" == v2 ]]; then
-			after="$(metrics_of "${NLB_PREFIX}-v2" | awk '/^nautiluslb_pipe_mode_total/{print}')"
-			printf 'before:\n%s\nafter:\n%s\n' "${before}" "${after}" | tee "${OUT}/v2-pipe-mode.txt"
-			record v2 iperf splice_total "$(awk '/mode="splice"/{print $2}' <<<"${after}")"
-			record v2 iperf generic_total "$(awk '/mode="generic"/{print $2}' <<<"${after}")"
-			docker logs "${NLB_PREFIX}-v2" 2>&1 | grep -E '"mode"' | grep -v perf_http | tail -n 3 >"${OUT}/v2-accesslog-iperf.txt" || true
+		if [[ "${t}" == nlb ]]; then
+			after="$(metrics_of "${NLB_PREFIX}-nlb" | awk '/^nautiluslb_pipe_mode_total/{print}')"
+			printf 'before:\n%s\nafter:\n%s\n' "${before}" "${after}" | tee "${OUT}/nlb-pipe-mode.txt"
+			record nlb iperf splice_total "$(awk '/mode="splice"/{print $2}' <<<"${after}")"
+			record nlb iperf generic_total "$(awk '/mode="generic"/{print $2}' <<<"${after}")"
+			docker logs "${NLB_PREFIX}-nlb" 2>&1 | grep -E '"mode"' | grep -v perf_http | tail -n 3 >"${OUT}/nlb-accesslog-iperf.txt" || true
 		fi
 	done
 }
@@ -115,16 +115,16 @@ phase_rate() {
 			rate_run "${t}" "${c}" "rate-${t}-c${c}"
 			sleep 5
 		done
-		if [[ "${t}" == v2 ]]; then
-			metrics_of "${NLB_PREFIX}-v2" >"${OUT}/v2-metrics-after-rate.prom"
+		if [[ "${t}" == nlb ]]; then
+			metrics_of "${NLB_PREFIX}-nlb" >"${OUT}/nlb-metrics-after-rate.prom"
 		fi
 	done
 }
 
 # ratestd: the rate test with fortio's Go net/http client (-stdclient), which
 # stops reading at Content-Length instead of waiting for the server's close.
-# v1 never forwards the backend's FIN to the client, so with fortio's default
-# client every v1 request waits for the 5s timeout; this gives v1 a number.
+# v0 never forwards the backend's FIN to the client, so with fortio's default
+# client every v0 request waits for the 5s timeout; this gives v0 a number.
 phase_ratestd() {
 	local t s name
 	for t in ${TARGETS}; do
@@ -183,10 +183,10 @@ phase_alog() {
 	# Alternate on/off ALOG_ROUNDS times: run-to-run noise on one VM is ~10%.
 	for i in $(seq 1 "${ALOG_ROUNDS:-3}"); do
 		for a in on off; do
-			log "v2 access log ${a} (round ${i})"
-			start_target v2 "${a}"
-			rate_run v2 64 "alog-${a}-c64-r${i}" "v2-alog-${a}"
-			metrics_of "${NLB_PREFIX}-v2" | grep -E '^nautiluslb_accesslog_dropped_total' | tee "${OUT}/alog-${a}-r${i}-dropped.txt" || true
+			log "nlb access log ${a} (round ${i})"
+			start_target nlb "${a}"
+			rate_run nlb 64 "alog-${a}-c64-r${i}" "nlb-alog-${a}"
+			metrics_of "${NLB_PREFIX}-nlb" | grep -E '^nautiluslb_accesslog_dropped_total' | tee "${OUT}/alog-${a}-r${i}-dropped.txt" || true
 		done
 	done
 }
@@ -197,7 +197,7 @@ idle_sample() {
 	ps="$(proc_stat "${name}")"
 	read -r rss fds thr <<<"${ps}"
 	m="$(mem_mib "${name}")"
-	if [[ "${t}" == v2 ]]; then
+	if [[ "${t}" == nlb ]]; then
 		g="$(goroutines_of "${name}")"
 		metrics_of "${name}" | grep -E '^(nautiluslb_connections_active|process_open_fds|process_resident_memory_bytes|go_memstats_heap_inuse_bytes|go_memstats_stack_inuse_bytes|go_memstats_sys_bytes)' \
 			>"${OUT}/idle-${t}-${label}.prom" || true
@@ -229,16 +229,16 @@ phase_idle() {
 		record "${t}" idle_open holder "${out// /_}"
 		sleep 15 # let the proxy finish dialling upstream for every connection
 		idle_sample "${t}" "${IDLE_CONNS}"
-		if [[ "${t}" == v2 ]]; then
-			cexec curl -sS --max-time 30 "http://$(container_ip "${NLB_PREFIX}-v2"):9090/debug/pprof/heap" >"${OUT}/v2-heap-idle.pb.gz"
-			cexec curl -sS --max-time 30 "http://$(container_ip "${NLB_PREFIX}-v2"):9090/debug/pprof/goroutine?debug=1" >"${OUT}/v2-goroutines-idle.txt"
+		if [[ "${t}" == nlb ]]; then
+			cexec curl -sS --max-time 30 "http://$(container_ip "${NLB_PREFIX}-nlb"):9090/debug/pprof/heap" >"${OUT}/nlb-heap-idle.pb.gz"
+			cexec curl -sS --max-time 30 "http://$(container_ip "${NLB_PREFIX}-nlb"):9090/debug/pprof/goroutine?debug=1" >"${OUT}/nlb-goroutines-idle.txt"
 		fi
 		docker stop -t 30 "${holder}" >/dev/null
 		docker logs "${holder}" 2>&1 | tail -n 3 | sed 's/^/  holder: /'
 		docker rm -f "${holder}" >/dev/null 2>&1 || true
 		sleep 20
 		idle_sample "${t}" after_close
-		if [[ "${t}" == v2 ]]; then
+		if [[ "${t}" == nlb ]]; then
 			# Go caches splice pipes in a sync.Pool, released only after two
 			# GCs; an idle process GCs every 2 minutes (forcegcperiod).
 			sleep 250
@@ -249,12 +249,12 @@ phase_idle() {
 
 # pipes: does the unprivileged pipe budget (fs.pipe-user-pages-soft) shrink
 # the splice pipes once many connections are open, and does it cost
-# throughput? iperf3 -P 1 through v2 alone, then with PIPE_IDLE idle
+# throughput? iperf3 -P 1 through nlb alone, then with PIPE_IDLE idle
 # connections held open.
-# PIPES_TARGET (default v2) runs the same throughput pair through another
-# proxy as a control (pipe sizes are only read for v2).
+# PIPES_TARGET (default nlb) runs the same throughput pair through another
+# proxy as a control (pipe sizes are only read for nlb).
 phase_pipes() {
-	local t="${PIPES_TARGET:-v2}"
+	local t="${PIPES_TARGET:-nlb}"
 	local name="${NLB_PREFIX}-${t}" holder="${NLB_PREFIX}-holder" pid j
 	log "${t}: iperf3 with and without idle connections"
 	start_target "${t}"
@@ -269,7 +269,7 @@ phase_pipes() {
 		--volume "${WORK}/idleconn:/idleconn:ro" --entrypoint /idleconn \
 		"${HOLDER_IMAGE}" -addr "$(addr "${t}" http)" -n "${PIPE_IDLE:-1000}" -workers 64 >/dev/null
 	sleep 15
-	if [[ "${t}" == v2 ]]; then
+	if [[ "${t}" == nlb ]]; then
 		docker run --rm --privileged --pid host -v "${PERF_DIR}:/p:ro" "${CLIENT_IMAGE}" python3 /p/pipesizes.py "${pid}" |
 			sed "s/^/with ${PIPE_IDLE:-1000} idle: /" | tee -a "${OUT}/pipes.txt"
 	fi
@@ -281,9 +281,9 @@ phase_pipes() {
 
 phase_profile() {
 	local ip load_pid
-	log "v2 CPU profiles"
-	start_target v2
-	ip="$(container_ip "${NLB_PREFIX}-v2")"
+	log "nlb CPU profiles"
+	start_target nlb
+	ip="$(container_ip "${NLB_PREFIX}-nlb")"
 	docker create --name "${NLB_PREFIX}-extract" "${IMAGE}" >/dev/null
 	docker cp "${NLB_PREFIX}-extract:/nautiluslb/nautiluslb" "${OUT}/nautiluslb-bin" >/dev/null
 	docker rm -f "${NLB_PREFIX}-extract" >/dev/null
@@ -292,27 +292,27 @@ phase_profile() {
 	fortio_run profile-rate -qps 0 -c 64 -t 30s -keepalive=false "http://${ip}:8080/small" &
 	load_pid=$!
 	sleep 5
-	cexec curl -sS --max-time 40 "http://${ip}:9090/debug/pprof/profile?seconds=20" >"${OUT}/v2-cpu-rate.pb.gz"
+	cexec curl -sS --max-time 40 "http://${ip}:9090/debug/pprof/profile?seconds=20" >"${OUT}/nlb-cpu-rate.pb.gz"
 	wait "${load_pid}" || true
-	go tool pprof -top -nodecount=25 "${OUT}/nautiluslb-bin" "${OUT}/v2-cpu-rate.pb.gz" >"${OUT}/v2-cpu-rate-top.txt" 2>&1 || true
-	go tool pprof -top -cum -nodecount=40 "${OUT}/nautiluslb-bin" "${OUT}/v2-cpu-rate.pb.gz" >"${OUT}/v2-cpu-rate-cum.txt" 2>&1 || true
-	cexec curl -sS --max-time 30 "http://${ip}:9090/debug/pprof/allocs" >"${OUT}/v2-allocs-rate.pb.gz"
+	go tool pprof -top -nodecount=25 "${OUT}/nautiluslb-bin" "${OUT}/nlb-cpu-rate.pb.gz" >"${OUT}/nlb-cpu-rate-top.txt" 2>&1 || true
+	go tool pprof -top -cum -nodecount=40 "${OUT}/nautiluslb-bin" "${OUT}/nlb-cpu-rate.pb.gz" >"${OUT}/nlb-cpu-rate-cum.txt" 2>&1 || true
+	cexec curl -sS --max-time 30 "http://${ip}:9090/debug/pprof/allocs" >"${OUT}/nlb-allocs-rate.pb.gz"
 
 	# Under bulk throughput.
 	sleep 5
-	iperf_run v2 8 30 >"${OUT}/iperf-profile.json" &
+	iperf_run nlb 8 30 >"${OUT}/iperf-profile.json" &
 	load_pid=$!
 	sleep 5
-	cexec curl -sS --max-time 40 "http://${ip}:9090/debug/pprof/profile?seconds=20" >"${OUT}/v2-cpu-iperf.pb.gz"
+	cexec curl -sS --max-time 40 "http://${ip}:9090/debug/pprof/profile?seconds=20" >"${OUT}/nlb-cpu-iperf.pb.gz"
 	wait "${load_pid}" || true
-	go tool pprof -top -nodecount=25 "${OUT}/nautiluslb-bin" "${OUT}/v2-cpu-iperf.pb.gz" >"${OUT}/v2-cpu-iperf-top.txt" 2>&1 || true
-	ok "profiles in ${OUT}/v2-cpu-*.pb.gz"
+	go tool pprof -top -nodecount=25 "${OUT}/nautiluslb-bin" "${OUT}/nlb-cpu-iperf.pb.gz" >"${OUT}/nlb-cpu-iperf-top.txt" 2>&1 || true
+	ok "profiles in ${OUT}/nlb-cpu-*.pb.gz"
 }
 
 phase_soak() {
-	local ip name="${NLB_PREFIX}-v2" t0 m g
-	log "soak: ${SOAK_SECONDS}s of -c 256 connection churn through v2"
-	start_target v2
+	local ip name="${NLB_PREFIX}-nlb" t0 m g
+	log "soak: ${SOAK_SECONDS}s of -c 256 connection churn through nlb"
+	start_target nlb
 	ip="$(container_ip "${name}")"
 	sleep 5
 	printf 't_s\tgoroutines\trss_mib\topen_fds\theap_inuse_mib\tactive_conns\taccepted_total\tcgroup_mib\n' >"${OUT}/soak.tsv"
@@ -343,12 +343,12 @@ phase_soak() {
 		"$(awk '/^nautiluslb_connections_accepted_total\{listener="perf_http"\}/{print $2}' <<<"${m}")" \
 		"$(mem_mib "${name}")" | tee -a "${OUT}/soak.tsv"
 	read -r qps p50 p99 p999 ok total errors sockets <<<"$(fortio_summary "${OUT}/fortio-soak.json")"
-	record v2 soak conns_per_s "${qps}"
-	record v2 soak p99_ms "${p99}"
-	record v2 soak errors "${errors}/${total}"
+	record nlb soak conns_per_s "${qps}"
+	record nlb soak p99_ms "${p99}"
+	record nlb soak errors "${errors}/${total}"
 	: "${p50}" "${p999}" "${ok}" "${sockets}"
-	printf '%s\n' "${m}" >"${OUT}/v2-metrics-after-soak.prom"
-	docker logs "${name}" 2>&1 | grep -iE 'panic|"level":"error"' | head -n 20 >"${OUT}/v2-soak-errors.txt" || true
+	printf '%s\n' "${m}" >"${OUT}/nlb-metrics-after-soak.prom"
+	docker logs "${name}" 2>&1 | grep -iE 'panic|"level":"error"' | head -n 20 >"${OUT}/nlb-soak-errors.txt" || true
 }
 
 phase_cleanup() {

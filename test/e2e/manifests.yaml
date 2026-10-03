@@ -4,11 +4,11 @@
 # the way NautilusLB is deployed in front of a cluster. Configuration names in
 # the annotations are the ones the cases put in their NautilusLB config.
 #
-#   binding (the v1.0.1 hijack regression; config e2e_http allowlists e2e-apps):
+#   binding (the hijack regression fixed in v1.0.0; config e2e_http allowlists e2e-apps):
 #     bound     e2e-apps   configurations=e2e_http,...   -> MUST receive traffic
 #     intruder  e2e-apps   configurations=other_config   -> must NOT (names another config)
 #     outsider  e2e-other  configurations=e2e_http       -> must NOT (namespace not allowlisted)
-#   All three have a port named "http", so before v1.0.1 every one of them would
+#   All three have a port named "http", so in v0.x every one of them would
 #   have joined the e2e_http pool.
 #
 #   lb-0, lb-1, lb-2   one StatefulSet pod each, body = pod name   (balancing)

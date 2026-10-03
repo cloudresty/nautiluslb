@@ -14,8 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-const upgradeHint = "this looks like a v1 file (no apiVersion): set apiVersion: " + APIVersion +
-	" and kind: " + Kind + "; see docs/upgrading-v2.md"
+const upgradeHint = "this looks like a v0.x config file (no apiVersion): set apiVersion: " + APIVersion +
+	" and kind: " + Kind + "; see docs/upgrading-v1.md"
 
 var (
 	logLevels       = []string{"debug", "info", "information", "warn", "warning", "error"}
@@ -61,7 +61,7 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New(upgradeHint))
 	} else {
 		if v.APIVersion != APIVersion {
-			errs = append(errs, fmt.Errorf("apiVersion must be %q, got %q (see docs/upgrading-v2.md)", APIVersion, v.APIVersion))
+			errs = append(errs, fmt.Errorf("apiVersion must be %q, got %q (see docs/upgrading-v1.md)", APIVersion, v.APIVersion))
 		}
 		if v.Kind != Kind {
 			errs = append(errs, fmt.Errorf("kind must be %q, got %q", Kind, v.Kind))

@@ -20,7 +20,7 @@ import (
 	nlbruntime "github.com/cloudresty/nautiluslb/internal/runtime"
 )
 
-const testHeader = "apiVersion: nautiluslb.cloudresty.io/v2\nkind: Config\n"
+const testHeader = "apiVersion: nautiluslb.cloudresty.io/v1\nkind: Config\n"
 
 func writeCfg(t *testing.T, body string) string {
 	t.Helper()

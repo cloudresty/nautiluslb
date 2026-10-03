@@ -71,8 +71,8 @@ validates everything else at startup (and with --validate).
 */}}
 {{- define "nautiluslb.validate" -}}
 {{- $c := .Values.config | default dict -}}
-{{- if ne (toString $c.apiVersion) "nautiluslb.cloudresty.io/v2" -}}
-{{- fail (printf "config.apiVersion must be \"nautiluslb.cloudresty.io/v2\", got %q (see docs/upgrading-v2.md)" (toString $c.apiVersion)) -}}
+{{- if ne (toString $c.apiVersion) "nautiluslb.cloudresty.io/v1" -}}
+{{- fail (printf "config.apiVersion must be \"nautiluslb.cloudresty.io/v1\", got %q (see docs/upgrading-v1.md)" (toString $c.apiVersion)) -}}
 {{- end -}}
 {{- if ne (toString $c.kind) "Config" -}}
 {{- fail (printf "config.kind must be \"Config\", got %q" (toString $c.kind)) -}}

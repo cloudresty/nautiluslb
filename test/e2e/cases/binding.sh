@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# binding: the v1.0.1 hijack regression. Configuration e2e_http allowlists
+# binding: the hijack regression fixed in v1.0.0. Configuration e2e_http allowlists
 # e2e-apps; of the three Services with a port named "http" only "bound" may
 # answer: "intruder" names another configuration, "outsider" lives in a
 # namespace that is not allowlisted.

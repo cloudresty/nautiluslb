@@ -129,7 +129,7 @@ The file output is opened once, in append mode. Rotate it with `copytruncate` (l
 | `Unsupported service type in discovery, ignoring it` | an `ExternalName` Service is bound |
 | `Discovery not synced yet, serving without endpoints` | informers did not sync within 60s. Check RBAC (`list` + `watch`) and API reachability. |
 | `Admin address is not loopback; metrics and pprof are exposed` | `settings.admin.address` is reachable from the network |
-| `Deprecated configuration` | v1 keys or bare-integer durations; see [upgrading-v2.md](upgrading-v2.md) |
+| `Deprecated configuration` | v0.x keys or bare-integer durations; see [upgrading-v1.md](upgrading-v1.md) |
 
 Raise `settings.logLevel` to `debug` (restart required) to log each backend dial failure with its cause and whether it ejected the backend.
 

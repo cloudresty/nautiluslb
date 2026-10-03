@@ -135,7 +135,7 @@
       ],
       "properties": {
         "apiVersion": {
-          "const": "nautiluslb.cloudresty.io/v2"
+          "const": "nautiluslb.cloudresty.io/v1"
         },
         "kind": {
           "const": "Config"

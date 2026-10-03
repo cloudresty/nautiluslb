@@ -4,7 +4,7 @@ serviceMonitor:
 networkPolicy:
   enabled: true
 config:
-  apiVersion: nautiluslb.cloudresty.io/v2
+  apiVersion: nautiluslb.cloudresty.io/v1
   kind: Config
   configurations:
     - name: http

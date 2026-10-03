@@ -18,14 +18,14 @@ NautilusLB reads one YAML file. By default this is `config.yaml` in the working 
 - **Strict parsing.** An unknown key is an error, not a silently ignored line. The file must hold exactly one YAML document.
 - **All errors at once.** Validation reports every problem in one message. Problems in a configuration are prefixed `configurations[<i>] (<name>)`. An invalid file stops startup with exit status 1 and the log message `Failed to load configuration`. On reload, an invalid file is rejected and the running configuration is kept.
 - **Order.** The loader parses the file, applies defaults, applies the `NLB_*` [environment overrides](#environment-overrides) and then validates the result.
-- **Durations** are strings parsed by Go's `time.ParseDuration`: `"200ms"`, `"30s"`, `"5m"`, `"1h"`. A bare integer is still accepted and read as seconds (v1 style). It is deprecated and logged as a warning, except `0`.
-- **Deprecations** are logged at startup as `Deprecated configuration` warnings, and `--validate` prints them. See [upgrading-v2.md](upgrading-v2.md).
+- **Durations** are strings parsed by Go's `time.ParseDuration`: `"200ms"`, `"30s"`, `"5m"`, `"1h"`. A bare integer is still accepted and read as seconds (v0.x style). It is deprecated and logged as a warning, except `0`.
+- **Deprecations** are logged at startup as `Deprecated configuration` warnings, and `--validate` prints them. See [upgrading-v1.md](upgrading-v1.md).
 
 ## Top level
 
 | Key | Type | Required | Validation |
 | --- | --- | --- | --- |
-| `apiVersion` | string | yes | must be `nautiluslb.cloudresty.io/v2`. A file with neither `apiVersion` nor `kind` is reported as a v1 file. |
+| `apiVersion` | string | yes | must be `nautiluslb.cloudresty.io/v1`. A file with neither `apiVersion` nor `kind` is reported as a legacy v0.x file. |
 | `kind` | string | yes | must be `Config` |
 | `settings` | object | no | see [settings](#settings) |
 | `configurations` | list | yes | at least one entry |
@@ -287,7 +287,7 @@ Every example below is a complete file that `--validate` accepts. Merge the `con
 ### Plain TCP with least connections and limits
 
 ```yaml
-apiVersion: nautiluslb.cloudresty.io/v2
+apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 configurations:
   - name: mongodb
@@ -309,7 +309,7 @@ configurations:
 ### TLS passthrough with SNI routes
 
 ```yaml
-apiVersion: nautiluslb.cloudresty.io/v2
+apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 configurations:
   - name: https
@@ -337,7 +337,7 @@ configurations:
 ### UDP
 
 ```yaml
-apiVersion: nautiluslb.cloudresty.io/v2
+apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 configurations:
   - name: dns
@@ -358,7 +358,7 @@ configurations:
 An upstream L4 balancer at `192.0.2.0/28` prepends PROXY headers. The backends (ingress-nginx with `use-proxy-protocol: "true"`) expect PROXY v2.
 
 ```yaml
-apiVersion: nautiluslb.cloudresty.io/v2
+apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 configurations:
   - name: http
@@ -375,7 +375,7 @@ configurations:
 ### HTTP health probe and passive ejection tuning
 
 ```yaml
-apiVersion: nautiluslb.cloudresty.io/v2
+apiVersion: nautiluslb.cloudresty.io/v1
 kind: Config
 configurations:
   - name: http

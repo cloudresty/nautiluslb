@@ -1,4 +1,4 @@
-# NautilusLB v2 systemd unit for running outside Kubernetes (a VM or bare-metal
+# NautilusLB systemd unit for running outside Kubernetes (a VM or bare-metal
 # pair in front of a cluster). Install and usage: deploy/systemd/README.md.
 #
 #   Binary      /usr/local/bin/nautiluslb
