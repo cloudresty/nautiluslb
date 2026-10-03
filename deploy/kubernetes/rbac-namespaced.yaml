@@ -1,0 +1,48 @@
+# NautilusLB raw manifests: mirrors the Helm chart defaults
+# (deploy/helm/nautiluslb); `bash deploy/check-drift.sh` checks them.
+#
+# Least-privilege discovery (the default): ONE Role + RoleBinding per namespace
+# that appears in any configuration's `namespaces` allowlist. NautilusLB runs a
+# Service and EndpointSlice informer per allowlisted namespace, so it needs
+# list + watch on exactly those two resources there, and nowhere else.
+#
+# The example below covers `ingress-nginx`, the namespace allowlisted by the
+# ConfigMap in configmap.yaml. For every additional allowlisted namespace, copy
+# both documents and change `metadata.namespace`. The namespace must exist
+# before this is applied.
+#
+# A configuration with `namespaces: ["*"]` needs rbac-clusterwide.yaml instead.
+# Scoped configurations never depend on cluster-wide permissions, so a missing
+# cluster-wide grant cannot stall them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nautiluslb-discovery
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nautiluslb-discovery
+  namespace: ingress-nginx
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nautiluslb-discovery
+subjects:
+  - kind: ServiceAccount
+    name: nautiluslb
+    namespace: nautiluslb

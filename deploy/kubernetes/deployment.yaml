@@ -1,0 +1,143 @@
+# NautilusLB raw manifests: mirrors the Helm chart defaults
+# (deploy/helm/nautiluslb); `bash deploy/check-drift.sh` checks them.
+#
+# Two replicas behind the LoadBalancer Service. Replicas are independent: each
+# discovers the same backends and balances on its own (no leader election).
+#
+# Shutdown: on SIGTERM NautilusLB flips /readyz to 503, waits
+# drain.readinessDelay (3s) so endpoints stop routing to it, then drains open
+# connections for up to drain.timeout (30s), then force-closes the rest and
+# stops (up to ~9s more). terminationGracePeriodSeconds is
+# timeout + readinessDelay + 15 = 48; raise it with drain.timeout.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nautiluslb
+  namespace: nautiluslb
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nautiluslb
+      app.kubernetes.io/instance: nautiluslb
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nautiluslb
+        app.kubernetes.io/instance: nautiluslb
+        app.kubernetes.io/version: "1.0.0"
+    spec:
+      serviceAccountName: nautiluslb
+      terminationGracePeriodSeconds: 48
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+        # Safe (namespaced) sysctl, allowed by the restricted Pod Security
+        # Standard: lets UID 65532 bind listener ports < 1024 without any
+        # capability. Remove it with hostNetwork: true (it cannot be set there).
+        sysctls:
+          - name: net.ipv4.ip_unprivileged_port_start
+            value: "0"
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: nautiluslb
+              app.kubernetes.io/instance: nautiluslb
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: nautiluslb
+              app.kubernetes.io/instance: nautiluslb
+      containers:
+        - name: nautiluslb
+          image: cloudresty/nautiluslb:v1.0.0
+          imagePullPolicy: IfNotPresent
+          # The image ENTRYPOINT is the binary; only flags are passed.
+          args:
+            - --config
+            - /etc/nautiluslb/config.yaml
+          env:
+            # Let the Go runtime respect the container memory limit.
+            - name: GOMEMLIMIT
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.memory
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: admin
+              containerPort: 9090
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: admin
+            periodSeconds: 2
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 1
+          startupProbe:
+            # Startup waits for discovery to sync (up to 60s) before /readyz
+            # turns 200; /healthz answers as soon as the admin server is up.
+            httpGet:
+              path: /healthz
+              port: admin
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              # No CPU limit: CFS throttling adds latency to every proxied
+              # connection. Size the memory limit to connection count.
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # Mount the directory, never a subPath: subPath mounts are not
+            # updated, which would defeat settings.reload.watchFile.
+            - name: config
+              mountPath: /etc/nautiluslb
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: nautiluslb

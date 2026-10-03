@@ -1,0 +1,17 @@
+# The build context is the repository root (see Makefile and ci.yaml), so this
+# file is the one Docker reads. It is an allowlist: everything is excluded and
+# only what the build needs is re-included. Anything new stays out by default.
+
+*
+
+# Go module (sources, go.mod, go.sum)
+!app/
+
+# Local-only files that must never reach the build context, even though they
+# live under app/ (they are git-ignored, but Docker does not read .gitignore).
+app/**/kubeconfig
+app/**/kubeconfig*
+app/**/config.yaml
+app/**/*.env
+app/**/*.dev
+app/**/.DS_Store

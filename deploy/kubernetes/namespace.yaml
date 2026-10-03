@@ -1,0 +1,16 @@
+# NautilusLB raw manifests: a readable reference set that mirrors the Helm
+# chart defaults (deploy/helm/nautiluslb). `bash deploy/check-drift.sh` compares these files
+# with `helm template` output; change the chart and these together.
+#
+# Apply the default set with:  kubectl apply -k deploy/kubernetes
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nautiluslb
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+    # NautilusLB runs non-root with a read-only root filesystem and no
+    # privilege escalation, so the namespace can enforce "restricted".
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/warn: restricted

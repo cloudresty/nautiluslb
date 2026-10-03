@@ -1,0 +1,17 @@
+configReload: restart
+serviceMonitor:
+  enabled: true
+networkPolicy:
+  enabled: true
+config:
+  apiVersion: nautiluslb.cloudresty.io/v1
+  kind: Config
+  configurations:
+    - name: http
+      listenerAddress: ":8080"
+      namespaces: [a, b]
+      backendPortName: http
+    - name: mongodb
+      listenerAddress: ":27017"
+      namespace: c
+      backendPortName: mongodb

@@ -1,224 +1,289 @@
 name: CI
 
-# This CI workflow runs linting, testing, and builds for NautilusLB.
-# It tests against multiple Go versions and includes comprehensive checks
-# for code quality, security, and functionality.
+# The gate every change passes: format, vet, race tests with coverage, the
+# in-process integration suite, a fuzz smoke run, lint, vulnerability scan,
+# Helm chart lint and drift check, a multi-arch image build and the kind-based
+# end-to-end test.
+#
+# Runs on pushes to main/develop and on PRs against them. It publishes nothing:
+# release.yaml calls this workflow (workflow_call) on a version tag and only
+# publishes once every job here has passed.
+#
+# Third-party actions are pinned to full commit SHAs; the trailing comment is
+# the release tag the SHA was resolved from (annotated tags dereferenced).
 
 on:
   push:
     branches: [ main, develop ]
-    tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
   pull_request:
     branches: [ main, develop ]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # When called from release.yaml, github.workflow is the caller's name, so the
+  # group never collides with the caller's own concurrency group.
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOLANGCI_LINT_VERSION: v2.14.0
+  GOVULNCHECK_VERSION: v1.8.0
+  ACTIONLINT_VERSION: v1.7.12
+  HELM_VERSION: v4.3.0
+  CT_VERSION: 3.14.0
 
 jobs:
   test:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        go-version: [1.23, 1.24]
-
+    defaults:
+      run:
+        working-directory: app
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: ${{ matrix.go-version }}
-        cache: true
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
 
-    - name: Change to app directory
-      run: cd app
+      - name: Download and verify dependencies
+        run: |
+          go mod download
+          go mod verify
 
-    - name: Install dependencies
-      run: cd app && go mod download
+      - name: Format check
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Files not formatted with gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
 
-    - name: Verify dependencies
-      run: cd app && go mod verify
+      - name: Vet
+        run: |
+          go vet ./...
+          go vet -tags integration ./...
 
-    - name: Format check
-      run: |
-        cd app
-        go fmt ./...
-        git diff --exit-code
+      - name: Test (race, coverage)
+        run: go test -race -coverprofile=coverage.out ./...
 
-    - name: Vet
-      run: cd app && go vet ./...
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          files: ./app/coverage.out
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: false
 
-    - name: Run tests
-      run: cd app && go test -v -race ./...
+      - name: Build binary
+        run: |
+          go build -trimpath -o nautiluslb ./cmd/nautiluslb
+          ./nautiluslb -help
+          ./nautiluslb --version
 
-    - name: Run tests with coverage
-      run: cd app && go test -v -race -coverprofile=coverage.out ./...
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      EMIT_LEVEL: error
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-    - name: Upload coverage to Codecov
-      uses: codecov/codecov-action@v4
-      with:
-        file: ./app/coverage.out
-        flags: unittests
-        name: codecov-umbrella
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
 
-    - name: Build binary
-      run: cd app && go build -o nautiluslb .
+      - name: Integration tests (race)
+        run: make integration
 
-    - name: Test build output
-      run: |
-        cd app
-        ./nautiluslb -help || echo "Binary built successfully (help command may not be available)"
-        ls -la nautiluslb
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: Fuzz every target for 10s
+        run: make fuzz FUZZTIME=10s FUZZMINIMIZE=0
 
   lint:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: 1.24
-        cache: true
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
 
-    - name: golangci-lint
-      uses: golangci/golangci-lint-action@v6
-      with:
-        version: latest
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          working-directory: app
+          args: --timeout=5m
+
+  vuln:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
         working-directory: app
-        args: --out-format=colored-line-number --timeout=5m
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache-dependency-path: app/go.sum
+
+      - name: govulncheck
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: app/go.mod
+          cache: false
+
+      - name: actionlint (shellcheck is preinstalled on the runner)
+        run: go run "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_VERSION}" -color
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # ct inspects git history
+          persist-credentials: false
+
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Set up Python (for ct's yamllint and yamale)
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.x'
+
+      - name: Set up chart-testing
+        uses: helm/chart-testing-action@6ec842c01de15ebb84c8627d2744a0c2f2755c9f # v2.8.0
+        with:
+          version: ${{ env.CT_VERSION }}
+
+      - name: helm lint --strict
+        run: |
+          helm lint --strict deploy/helm/nautiluslb
+          for values in deploy/helm/nautiluslb/ci/*.yaml; do
+            echo "==> ${values}"
+            helm lint --strict deploy/helm/nautiluslb --values "${values}"
+          done
+
+      - name: ct lint (every ci/*-values.yaml)
+        run: ct lint --config .github/ct.yaml --charts deploy/helm/nautiluslb --validate-maintainers=false
+
+      - name: Raw manifests match the chart (drift check)
+        run: |
+          # yq (v4) and kubectl are preinstalled on ubuntu-latest; the script
+          # falls back to python3/PyYAML when yq is missing.
+          yq --version || true
+          kubectl version --client
+          bash deploy/check-drift.sh
 
   docker-build:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # Fetch full history for git describe
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-    - name: Build Docker image
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: ./build/Dockerfile
-        push: false
-        tags: cloudresty/nautiluslb:latest
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
+      # The builder stage runs on the build platform and cross-compiles, and the
+      # final stage has no RUN, so no QEMU is needed for arm64.
+      - name: Build Docker image (all release platforms, no push)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./build/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: false
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
+          tags: cloudresty/nautiluslb:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-  integration:
+  e2e:
     runs-on: ubuntu-latest
-    needs: [test, lint]
-
+    timeout-minutes: 25
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: 1.24
-        cache: true
+      - name: Install kind and kubectl
+        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0
+        with:
+          install_only: true
 
-    - name: Create kind cluster
-      uses: helm/kind-action@v1
-      with:
-        cluster_name: nautiluslb-test
+      - name: End-to-end test (kind)
+        shell: bash # -eo pipefail, so tee does not hide the exit code
+        env:
+          KEEP: '1' # keep the cluster so its logs can be exported on failure
+        run: |
+          mkdir -p e2e-logs
+          make e2e 2>&1 | tee e2e-logs/run.log
 
-    - name: Build and load Docker image
-      run: |
-        docker build -t cloudresty/nautiluslb:test -f ./build/Dockerfile .
-        kind load docker-image cloudresty/nautiluslb:test --name nautiluslb-test
+      - name: Collect e2e logs
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          kind export logs --name nautiluslb-e2e e2e-logs/kind
+          docker logs nautiluslb-e2e > e2e-logs/nautiluslb.log 2>&1
+          docker logs nautiluslb-e2e-strict > e2e-logs/nautiluslb-strict.log 2>&1
+          docker ps -a > e2e-logs/docker-ps.txt 2>&1
+          exit 0
 
-    - name: Deploy test services
-      run: |
-        kubectl create namespace test-namespace
-        kubectl apply -f - <<EOF
-        apiVersion: v1
-        kind: Service
-        metadata:
-          name: test-service
-          namespace: test-namespace
-          annotations:
-            nautiluslb.cloudresty.io/enabled: "true"
-        spec:
-          type: NodePort
-          ports:
-          - name: http
-            port: 80
-            targetPort: 80
-          selector:
-            app: test-app
-        ---
-        apiVersion: apps/v1
-        kind: Deployment
-        metadata:
-          name: test-deployment
-          namespace: test-namespace
-        spec:
-          replicas: 2
-          selector:
-            matchLabels:
-              app: test-app
-          template:
-            metadata:
-              labels:
-                app: test-app
-            spec:
-              containers:
-              - name: nginx
-                image: nginx:alpine
-                ports:
-                - containerPort: 80
-        EOF
-
-    - name: Wait for deployment
-      run: kubectl wait --for=condition=available deployment/test-deployment -n test-namespace --timeout=300s
-
-    - name: Test service discovery
-      run: |
-        kubectl get services -n test-namespace
-        kubectl get endpoints -n test-namespace
-
-    - name: Cleanup
-      run: kubectl delete namespace test-namespace
-
-  docker-release:
-    runs-on: ubuntu-latest
-    needs: [integration]
-    if: startsWith(github.ref, 'refs/tags/v')
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Extract version from tag
-      id: version
-      run: |
-        TAG=${GITHUB_REF#refs/tags/}
-        echo "tag=$TAG" >> $GITHUB_OUTPUT
-        echo "Release version: $TAG"
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ vars.CLR__DOCKER_HUB_USERNAME }}
-        password: ${{ secrets.CLR__DOCKER_HUB_PAT }}
-
-    - name: Build and push Docker image
-      uses: docker/build-push-action@v6
-      with:
-        context: .
-        file: ./build/Dockerfile
-        push: true
-        tags: |
-          cloudresty/nautiluslb:latest
-          cloudresty/nautiluslb:${{ steps.version.outputs.tag }}
-        cache-from: type=registry,ref=cloudresty/nautiluslb:latest
-        cache-to: type=inline
-        platforms: linux/amd64,linux/arm64
-
-    - name: Image digest
-      run: echo "Image pushed successfully with tags - cloudresty/nautiluslb:${{ steps.version.outputs.tag }} and cloudresty/nautiluslb:latest"
+      - name: Upload e2e logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-logs
+          path: e2e-logs/
+          retention-days: 7
+          if-no-files-found: ignore

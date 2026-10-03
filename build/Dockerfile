@@ -1,46 +1,61 @@
+# syntax=docker/dockerfile:1
+
 #
 # Builder Stage
 #
+# The build context is the repository root; /.dockerignore keeps it to app/
+# minus local secrets (kubeconfig, config.yaml).
+#
 
-# Golang image
-FROM    golang:1.24-bookworm AS builder
+# golang:1.27.1-trixie
+FROM    --platform=$BUILDPLATFORM golang:1.27.1-trixie@sha256:3b77fc618ec235a1ab412de7737f120dd507c57e8d87de4cbb7994fb94275ed5 AS builder
 
-RUN     set -x && \
-            DEBIAN_FRONTEND=noninteractive \
-            apt-get update && \
-            apt-get install -y \
-                ca-certificates
+ARG     TARGETOS
+ARG     TARGETARCH
+ARG     VERSION=dev
+ARG     COMMIT=unknown
+ARG     BUILD_DATE=unknown
 
-# Set the Current Working Directory inside the container
-WORKDIR /nautiluslb
+WORKDIR /src
 
-ENV     CGO_ENABLED=0
+# Dependencies first, so source edits do not invalidate this layer.
+COPY    app/go.mod app/go.sum ./
+RUN     --mount=type=cache,target=/go/pkg/mod \
+        go mod download && go mod verify
 
-# Copy all required files
-COPY    app/ .
-
-# Go Dependencies
-RUN     go clean -modcache
-RUN     go mod tidy -compat=1.24
-
-# Build the Go app
-RUN     go build -o nautiluslb .
+# Build a static binary.
+COPY    app/ ./
+RUN     --mount=type=cache,target=/go/pkg/mod \
+        --mount=type=cache,target=/root/.cache/go-build \
+        CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+        go build -trimpath \
+        -ldflags="-s -w \
+        -X github.com/cloudresty/nautiluslb/internal/version.Version=${VERSION} \
+        -X github.com/cloudresty/nautiluslb/internal/version.Commit=${COMMIT} \
+        -X github.com/cloudresty/nautiluslb/internal/version.BuildDate=${BUILD_DATE}" \
+        -o /out/nautiluslb ./cmd/nautiluslb
 
 #
 # Final Image
 #
+# Runtime contract (unchanged from earlier releases):
+#   - binary:      /nautiluslb/nautiluslb
+#   - working dir: /nautiluslb  (config.yaml is read from here, so mount it at
+#                                /nautiluslb/config.yaml)
+#
+# Runs as the distroless "nonroot" user (UID/GID 65532). Mounted files such as
+# a kubeconfig must be readable by that UID.
+#
 
-# Start fresh from a smaller image
-FROM    debian:bookworm-slim
+# gcr.io/distroless/static-debian13:nonroot
+FROM    gcr.io/distroless/static-debian13:nonroot@sha256:e2e927ec666bae08560abb3c55d0659eceabb657f56b6782ab500a9fc7f555e3
 
-# Copy the output from builder stage
-COPY    --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
-COPY    --from=builder /nautiluslb/nautiluslb /nautiluslb/nautiluslb
+COPY    --from=builder /out/nautiluslb /nautiluslb/nautiluslb
 
-# Set the Current Working Directory inside the container
 WORKDIR /nautiluslb
+
+USER    65532:65532
 
 EXPOSE  80 443
 
-# Execute the application when the container starts
-CMD     ["/nautiluslb/nautiluslb"]
+ENTRYPOINT ["/nautiluslb/nautiluslb"]

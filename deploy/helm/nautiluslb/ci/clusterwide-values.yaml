@@ -1,0 +1,18 @@
+config:
+  apiVersion: nautiluslb.cloudresty.io/v1
+  kind: Config
+  configurations:
+    - name: https
+      protocol: tls
+      listenerAddress: ":443"
+      namespaces: ["*"]
+      backendPortName: https
+      tls:
+        routes:
+          - name: web
+            hosts: ["example.com"]
+    - name: dns
+      protocol: udp
+      listenerAddress: ":53"
+      namespaces: [dns]
+      backendPortName: dns-udp

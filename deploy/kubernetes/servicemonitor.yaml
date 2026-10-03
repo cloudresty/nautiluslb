@@ -1,0 +1,32 @@
+# NautilusLB raw manifests: mirrors the Helm chart (deploy/helm/nautiluslb)
+# with the ServiceMonitor enabled. Not in the default kustomization, so
+# deploy/check-drift.sh does not compare it; keep it in step by hand.
+#
+# OPTIONAL, NOT part of the default kustomization: requires the
+# prometheus-operator CRDs (monitoring.coreos.com/v1). Without them this fails
+# to apply with "no matches for kind ServiceMonitor".
+#
+#   kubectl apply -f deploy/kubernetes/servicemonitor.yaml
+#
+# Your Prometheus may select ServiceMonitors by label (e.g. `release:
+# kube-prometheus-stack`); add that label here if so.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: nautiluslb
+  namespace: nautiluslb
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nautiluslb
+      app.kubernetes.io/instance: nautiluslb
+      app.kubernetes.io/component: metrics
+  namespaceSelector:
+    matchNames: [nautiluslb]
+  endpoints:
+    - port: admin
+      path: /metrics
+      interval: 30s

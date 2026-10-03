@@ -1,0 +1,36 @@
+# NautilusLB raw manifests: mirrors the Helm chart defaults
+# (deploy/helm/nautiluslb); `bash deploy/check-drift.sh` checks them.
+#
+# Cluster-scoped permission NautilusLB ALWAYS needs: Nodes are cluster-scoped,
+# and their addresses are the NodePort backends. Read-only (list + watch for the
+# informer); no get, no write verbs, nothing else.
+#
+# Services and EndpointSlices are granted separately, per allowlisted namespace
+# (rbac-namespaced.yaml) or cluster-wide (rbac-clusterwide.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nautiluslb-nodes
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nautiluslb-nodes
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nautiluslb-nodes
+subjects:
+  - kind: ServiceAccount
+    name: nautiluslb
+    namespace: nautiluslb

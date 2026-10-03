@@ -1,0 +1,43 @@
+# NautilusLB raw manifests: mirrors the Helm chart (deploy/helm/nautiluslb)
+# with a `namespaces: ["*"]` configuration. Not in the default kustomization, so
+# deploy/check-drift.sh does not compare it; keep it in step by hand.
+#
+# ALTERNATIVE to rbac-namespaced.yaml, NOT part of the default kustomization.
+# Use it only when some configuration sets `namespaces: ["*"]`: NautilusLB then
+# runs one cluster-wide Service and EndpointSlice informer and needs list + watch
+# on both in every namespace.
+#
+# Prefer explicit namespaces. With this grant any namespace whose owner can set
+# the nautiluslb.cloudresty.io/* annotations can join a "*" configuration.
+#
+#   kubectl apply -f deploy/kubernetes/rbac-clusterwide.yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nautiluslb-discovery
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nautiluslb-discovery
+  labels:
+    app.kubernetes.io/name: nautiluslb
+    app.kubernetes.io/instance: nautiluslb
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nautiluslb-discovery
+subjects:
+  - kind: ServiceAccount
+    name: nautiluslb
+    namespace: nautiluslb

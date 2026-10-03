@@ -1,0 +1,113 @@
+# NautilusLB example configuration. Copy to config.yaml (git-ignored) and adjust.
+#
+# A Kubernetes Service joins a pool only when it carries BOTH annotations:
+#
+#   nautiluslb.cloudresty.io/enabled: "true"
+#   nautiluslb.cloudresty.io/configurations: "<config>[,<config>/<route>...]"
+#
+# <config> is a configuration `name` below; "<config>/<route>" targets one SNI
+# route of a tls configuration. Optional: nautiluslb.cloudresty.io/weight: "1".."100".
+#
+# Unknown keys are rejected at startup. Durations are strings ("30s", "5m").
+# Upgrading from v0.x (v0.0.x releases): see docs/upgrading-v1.md.
+apiVersion: nautiluslb.cloudresty.io/v1
+kind: Config
+
+settings:
+  logLevel: info                  # debug | info | warn | error        (NLB_LOG_LEVEL)
+  kubernetes:
+    kubeconfig: ""                # "" = in-cluster, then $KUBECONFIG   (NLB_KUBECONFIG)
+    qps: 20
+    burst: 40
+  discovery:
+    resyncPeriod: 5m
+    debounce: 200ms
+    nodes:
+      readyOnly: true             # drop NotReady nodes
+      skipUnschedulable: true     # drop cordoned nodes
+      skipControlPlane: false
+      addressFamily: ipv4         # ipv4 | ipv6 | prefer-ipv4 | prefer-ipv6
+  admin:
+    address: "127.0.0.1:9090"     # /metrics /healthz /readyz; "" disables (NLB_ADMIN_ADDRESS)
+    pprof: false                  # NLB_PPROF
+    metrics:
+      perBackend: true
+  accessLog:
+    enabled: true                 # NLB_ACCESS_LOG_ENABLED
+    output: stdout                # stdout | stderr | /absolute/path
+    bufferSize: 4096
+  limits:
+    maxConnections: 0             # process-wide, 0 = unlimited (NLB_MAX_CONNECTIONS)
+  drain:
+    readinessDelay: 3s
+    timeout: 30s                  # NLB_DRAIN_TIMEOUT
+  reload:
+    watchFile: false
+
+configurations:
+  # TLS passthrough with SNI routing; the TLS session is never terminated.
+  - name: https
+    protocol: tls
+    listenerAddress: ":443"
+    namespaces: [ingress-nginx, apps]
+    backendPortName: https
+    balancer:
+      algorithm: round_robin      # round_robin | least_conn | source_ip_hash | random_two_choices
+      slowStart: 30s
+    health:
+      type: tcp
+      interval: 10s
+      timeout: 2s
+    limits:
+      maxConnectionsPerSource: 200
+    access:
+      deny: ["192.0.2.0/24"]
+    proxyProtocol:
+      out: ""                     # "" | v1 | v2
+    tls:
+      peekTimeout: 5s
+      maxClientHello: 16384
+      defaultRoute: web
+      routes:
+        - name: web               # annotation entry "https/web"
+          hosts: ["example.com", "*.example.com"]
+          balancer: {algorithm: least_conn}
+        - name: api               # annotation entry "https/api"
+          hosts: ["api.example.com"]
+          backendPortName: api-https
+
+  # Plain HTTP with an HTTP health probe.
+  - name: http
+    listenerAddress: ":80"
+    namespaces: [ingress-nginx]
+    backendPortName: http
+    health:
+      type: http
+      http:
+        path: /healthz
+        expectStatus: [200, 204]
+
+  - name: mongodb
+    listenerAddress: ":27017"
+    namespaces: [databases]
+    backendPortName: mongodb
+    balancer:
+      algorithm: least_conn
+    limits:
+      maxConnectionsPerBackend: 500
+    dialTimeout: 5s
+    idleTimeout: 0                # 0 = none
+
+  # UDP: passive ejection only by default (health type none).
+  - name: dns
+    protocol: udp
+    listenerAddress: ":53"
+    namespaces: [dns]
+    backendPortName: dns-udp      # Service port must be protocol UDP
+    udp:
+      sessionIdleTimeout: 60s
+      # Per-listener cap (default 4096; 0 = unlimited, warned about at load).
+      # Memory is about maxSessions x (bufferSize + ~10KB per session).
+      maxSessions: 4096
+      maxSessionsPerSource: 0
+      bufferSize: 65535

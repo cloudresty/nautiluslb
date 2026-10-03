@@ -1,0 +1,202 @@
+# Fixtures for the NautilusLB performance suite (test/perf/run.sh).
+#
+# Two NodePort Services in namespace perf-apps, both bound to NautilusLB v1.0.0
+# (enabled + configurations annotations) and v0.0.11 (enabled only; v0.0.11 ignores the
+# configurations annotation and matches on the port name):
+#
+#   iperf      iperf3 server, port "iperf"      -> config perf_iperf (:5201)
+#   web        nginx: /small (64 B), /1m (1 MiB) -> config perf_http  (:8080)
+#
+# nginx is tuned so it is never the bottleneck and so idle connections that
+# never send a request stay open for an hour (the idle-connection test).
+# Images are pinned by tag and digest.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: perf-apps
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nautiluslb
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nautiluslb
+  namespace: nautiluslb
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nautiluslb-perf-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nautiluslb-perf-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nautiluslb-perf-nodes
+subjects:
+  - kind: ServiceAccount
+    name: nautiluslb
+    namespace: nautiluslb
+---
+# v1.0.0 needs list/watch on services and endpointslices; v0.0.11 needs list on services.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nautiluslb-discovery
+  namespace: perf-apps
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nautiluslb-discovery
+  namespace: perf-apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nautiluslb-discovery
+subjects:
+  - kind: ServiceAccount
+    name: nautiluslb
+    namespace: nautiluslb
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iperf
+  namespace: perf-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: iperf }
+  template:
+    metadata:
+      labels: { app: iperf }
+    spec:
+      containers:
+        - name: iperf3
+          image: networkstatic/iperf3:latest@sha256:bc267517f534d9f7cced2669f325799a1fd7fe1d5953c2ca2c6ea1db61affa08
+          args: ["-s"]
+          ports:
+            - containerPort: 5201
+          readinessProbe:
+            tcpSocket: { port: 5201 }
+            periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iperf
+  namespace: perf-apps
+  annotations:
+    nautiluslb.cloudresty.io/enabled: "true"
+    nautiluslb.cloudresty.io/configurations: "perf_iperf"
+spec:
+  type: NodePort
+  # Local: no SNAT on the NodePort hop (see README, "TIME_WAIT/PAWS").
+  externalTrafficPolicy: Local
+  selector: { app: iperf }
+  ports:
+    - name: iperf
+      port: 5201
+      targetPort: 5201
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-conf
+  namespace: perf-apps
+data:
+  nginx.conf: |
+    worker_processes auto;
+    worker_rlimit_nofile 200000;
+    events {
+      worker_connections 50000;
+      multi_accept on;
+    }
+    http {
+      access_log off;
+      error_log /dev/stderr warn;
+      sendfile on;
+      tcp_nopush on;
+      keepalive_requests 1000000;
+      keepalive_timeout 3600s;
+      client_header_timeout 3600s;
+      server {
+        listen 80 reuseport backlog=65535;
+        root /srv;
+        location / { default_type application/octet-stream; }
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: perf-apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: web }
+  template:
+    metadata:
+      labels: { app: web }
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.30.5-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
+          command:
+            - sh
+            - -c
+            - |
+              mkdir -p /srv
+              head -c 64 /dev/zero | tr '\0' 'x' > /srv/small
+              head -c 1048576 /dev/urandom > /srv/1m
+              exec nginx -c /etc/nginx-perf/nginx.conf -g 'daemon off;'
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/nginx-perf
+          readinessProbe:
+            httpGet: { path: /small, port: 80 }
+            periodSeconds: 5
+      volumes:
+        - name: conf
+          configMap:
+            name: web-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: perf-apps
+  annotations:
+    nautiluslb.cloudresty.io/enabled: "true"
+    nautiluslb.cloudresty.io/configurations: "perf_http"
+spec:
+  type: NodePort
+  # Local: no SNAT on the NodePort hop (see README, "TIME_WAIT/PAWS").
+  externalTrafficPolicy: Local
+  selector: { app: web }
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

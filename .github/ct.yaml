@@ -1,0 +1,10 @@
+# chart-testing (ct) configuration, used by the helm job in ci.yaml:
+#   ct lint --config .github/ct.yaml --charts deploy/helm/nautiluslb
+# ct lints the chart once per deploy/helm/nautiluslb/ci/*-values.yaml.
+chart-dirs:
+  - deploy/helm
+target-branch: main
+validate-maintainers: false
+# The chart version is set from the git tag at release time
+# (helm package --version), so Chart.yaml is not bumped per change.
+check-version-increment: false

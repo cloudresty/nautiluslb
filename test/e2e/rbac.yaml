@@ -1,0 +1,81 @@
+# Least-privilege RBAC for NautilusLB, the same grants as
+# deploy/kubernetes/rbac-cluster.yaml + rbac-namespaced.yaml.
+#
+# NautilusLB runs informers (list + watch, never get or any write) on:
+#   - nodes           cluster-scoped; their InternalIPs are the NodePort backends
+#   - services        in each namespace of each configuration's allowlist
+#   - endpointslices  (discovery.k8s.io) in the same namespaces
+#
+# The e2e test (run.sh) runs NautilusLB with a token for this ServiceAccount
+# rather than the kind admin kubeconfig, to prove this is sufficient. Its only
+# configuration allowlists e2e-apps, so services and endpointslices are granted
+# by a Role there and nowhere else: e2e-other (the "outsider" fixture) is not
+# even readable. A configuration with `namespaces: ["*"]` would instead need a
+# ClusterRole for them (deploy/kubernetes/rbac-clusterwide.yaml).
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nautiluslb
+---
+# Also declared in manifests.yaml; declared here so the Role below can be
+# applied first.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: e2e-apps
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nautiluslb
+  namespace: nautiluslb
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: nautiluslb-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: nautiluslb-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: nautiluslb-nodes
+subjects:
+  - kind: ServiceAccount
+    name: nautiluslb
+    namespace: nautiluslb
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nautiluslb-discovery
+  namespace: e2e-apps
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["list", "watch"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nautiluslb-discovery
+  namespace: e2e-apps
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nautiluslb-discovery
+subjects:
+  - kind: ServiceAccount
+    name: nautiluslb
+    namespace: nautiluslb

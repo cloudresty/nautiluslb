@@ -1,0 +1,62 @@
+# Dependabot version updates. Security updates are configured separately in
+# the repository settings and are not affected by the ignore rules below.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: [ "*" ]
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: gomod
+    directory: /app
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: deps
+    # DEPENDENCY TRAP: k8s.io/api, k8s.io/apimachinery and k8s.io/client-go
+    # must always move together, as one pinned set, and the k8s.io/* and
+    # sigs.k8s.io/* modules they require (kube-openapi, structured-merge-diff,
+    # utils, klog, ...) must only ever move as a consequence of that trio's
+    # go.mod. Bumping them on their own (e.g. what `go get -u all` does) pulls
+    # kube-openapi / structured-merge-diff versions that apimachinery does not
+    # compile against. So: the trio is updated only as one grouped PR (minor
+    # and patch), and every other Kubernetes module is ignored here.
+    groups:
+      kubernetes:
+        patterns:
+          - k8s.io/api
+          - k8s.io/apimachinery
+          - k8s.io/client-go
+        update-types: [ minor, patch ]
+      go-modules:
+        patterns: [ "*" ]
+        exclude-patterns:
+          - k8s.io/*
+          - sigs.k8s.io/*
+        update-types: [ minor, patch ]
+    ignore:
+      # The trio: never a major (they are v0 modules; a v1 would be a new API).
+      - dependency-name: k8s.io/api
+        update-types: [ "version-update:semver-major" ]
+      - dependency-name: k8s.io/apimachinery
+        update-types: [ "version-update:semver-major" ]
+      - dependency-name: k8s.io/client-go
+        update-types: [ "version-update:semver-major" ]
+      # Everything else from Kubernetes follows the trio, never on its own.
+      - dependency-name: k8s.io/kube-openapi
+      - dependency-name: k8s.io/klog/v2
+      - dependency-name: k8s.io/utils
+      - dependency-name: sigs.k8s.io/*
+
+  - package-ecosystem: docker
+    directory: /build
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build

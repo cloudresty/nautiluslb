@@ -1,0 +1,304 @@
+# Default values for the NautilusLB chart.
+#
+# NautilusLB discovers Kubernetes Services that opt in with BOTH annotations
+#
+#   nautiluslb.cloudresty.io/enabled: "true"
+#   nautiluslb.cloudresty.io/configurations: "<config>[,<config>/<route>...]"
+#
+# and forwards each listener to the NodePorts of the bound Services on the
+# cluster's nodes. Everything NautilusLB itself does is driven by `config`
+# below, which this chart renders verbatim into a ConfigMap, with three
+# settings managed by the chart (see `config`).
+
+# -- Override the chart name used in resource names.
+nameOverride: ""
+# -- Override the full resource name (release name + chart name by default).
+fullnameOverride: ""
+
+image:
+  # -- Image repository. The image is distroless static "nonroot" (UID/GID
+  # 65532); the binary /nautiluslb/nautiluslb is the ENTRYPOINT.
+  repository: cloudresty/nautiluslb
+  # -- Image tag. Defaults to the chart's appVersion.
+  tag: ""
+  # -- Optional image digest (sha256:...). When set it pins the image and is
+  # appended as repository[:tag]@digest.
+  digest: ""
+  # -- Image pull policy.
+  pullPolicy: IfNotPresent
+  # -- Image pull secrets, e.g. [{name: regcred}].
+  pullSecrets: []
+
+# -- Workload kind: Deployment or DaemonSet. A DaemonSet (usually with
+# hostNetwork: true and a nodeSelector for edge nodes) puts one balancer on
+# every selected node; a Deployment runs replicaCount pods behind `service`.
+mode: Deployment
+
+# -- Number of replicas (mode: Deployment only).
+replicaCount: 2
+
+# -- Update strategy of the Deployment (.spec.strategy) or DaemonSet
+# (.spec.updateStrategy). Empty picks a safe default: Deployment surges one
+# pod and keeps all old ones serving (maxSurge 1, maxUnavailable 0), except
+# with hostNetwork, where host ports cannot be shared, so it replaces one pod
+# at a time (maxSurge 0, maxUnavailable 1); DaemonSet replaces one node at a
+# time.
+updateStrategy: {}
+
+# -- Run in the node's network namespace. Listeners then bind directly on the
+# node's addresses and `service` is not rendered. dnsPolicy is set to
+# ClusterFirstWithHostNet automatically. Note: with hostNetwork the pod
+# sysctl that allows binding ports below 1024 cannot be used; see
+# privilegedPortsMode.
+hostNetwork: false
+
+# -- Allow listeners on ports below 1024 (80, 443, 53 ...). How depends on
+# privilegedPortsMode. Adding NET_BIND_SERVICE alone does NOT work for the
+# non-root UID 65532: Kubernetes sets no ambient capabilities, and file
+# capabilities are ignored with allowPrivilegeEscalation: false.
+bindPrivilegedPorts: true
+
+# -- How bindPrivilegedPorts is achieved:
+#   sysctl: (default, keeps UID 65532 and no capabilities) sets the safe,
+#           namespaced pod sysctl net.ipv4.ip_unprivileged_port_start=0.
+#           With hostNetwork: true that sysctl cannot be set on the pod: the
+#           node's own net.ipv4.ip_unprivileged_port_start applies, so lower it
+#           on the node or use listener ports >= 1024.
+#   root:   LESS SECURE opt-in for hostNetwork without node changes: runs as
+#           UID 0 (runAsNonRoot false) with capabilities drop ALL + add
+#           NET_BIND_SERVICE only. Violates the restricted Pod Security Standard.
+privilegedPortsMode: sysctl
+
+# -- How configuration changes reach running pods.
+#   watchFile: sets settings.reload.watchFile=true; NautilusLB polls the
+#              mounted file every 2s and hot-reloads (existing connections
+#              survive). The kubelet refreshes ConfigMap volumes in about a
+#              minute. settings.* changes are not hot-reloadable and are
+#              ignored with a warning until the next restart. Adding or
+#              removing a listener port still rolls the pods, because the
+#              container and Service ports are derived from the listeners.
+#   restart:   sets settings.reload.watchFile=false and adds a checksum/config
+#              pod annotation so every config change rolls the pods.
+configReload: watchFile
+
+# -- Listener ports exposed on the pod and on `service`. Leave empty to
+# derive them from config.configurations[].listenerAddress (protocol tls and
+# tcp -> TCP, udp -> UDP, named "<tcp|udp>-<port>"). Set explicitly to add
+# nodePort or a different service port, e.g.
+#   - name: https          # IANA service name, <= 15 chars
+#     port: 443            # service port
+#     targetPort: 443      # listener port (defaults to port)
+#     protocol: TCP        # TCP | UDP
+#     nodePort: 30443      # only for service.type NodePort/LoadBalancer
+listeners: []
+
+admin:
+  # -- Admin server port (/metrics, /healthz, /readyz). The chart always sets
+  # settings.admin.address to "<admin.host>:<admin.port>": the binary's
+  # default 127.0.0.1:9090 is unreachable for probes and Prometheus. pprof
+  # stays off unless config.settings.admin.pprof is true.
+  port: 9090
+  # -- Bind host of the admin server. With hostNetwork this exposes the admin
+  # port on every node interface; prefer bindPodIP then.
+  host: "0.0.0.0"
+  # -- Bind the admin server to the pod IP (status.podIP, via the
+  # NLB_ADMIN_ADDRESS env override) instead of admin.host. IPv4 pods only.
+  bindPodIP: false
+
+# -- The NautilusLB configuration file (apiVersion nautiluslb.cloudresty.io/v1,
+# kind Config), rendered into a ConfigMap and mounted at
+# /etc/nautiluslb/config.yaml. Unknown keys are rejected by NautilusLB at
+# startup. Schema and every field: app/config.example.yaml in the repository.
+# Managed by the chart (any value here is replaced):
+#   settings.admin.address   <- admin.host / admin.port
+#   settings.reload.watchFile <- configReload
+# RBAC is derived from configurations[].namespaces: a namespaced Role per
+# listed namespace, or a ClusterRole as soon as any configuration lists "*".
+# Every listed namespace must exist when the chart is installed.
+config:
+  apiVersion: nautiluslb.cloudresty.io/v1
+  kind: Config
+  settings:
+    logLevel: info
+    drain:
+      # On SIGTERM /readyz turns 503 for readinessDelay, then listeners stop
+      # accepting and in-flight connections get `timeout` to finish.
+      # terminationGracePeriodSeconds is derived from both (+15s; 48 by default).
+      readinessDelay: 3s
+      timeout: 30s
+    accessLog:
+      enabled: true
+      output: stdout
+  configurations:
+    # One plain TCP listener. A Service in namespace "default" joins it with
+    #   nautiluslb.cloudresty.io/enabled: "true"
+    #   nautiluslb.cloudresty.io/configurations: "http"
+    # and a port named "http". Add tls (SNI routing) and udp configurations
+    # as in app/config.example.yaml.
+    - name: http
+      protocol: tcp
+      listenerAddress: ":80"
+      namespaces: [default]
+      backendPortName: http
+
+# -- Seconds Kubernetes waits after SIGTERM before SIGKILL. Empty derives
+# config.settings.drain.timeout + readinessDelay + 15 (defaults 30s + 3s + 15 =
+# 48), each duration rounded up to whole seconds first. The 15s covers the
+# force-close wait (5s), access-log close (2s) and admin shutdown (2s).
+# NLB_DRAIN_TIMEOUT set through extraEnv is not taken into account.
+terminationGracePeriodSeconds: null
+
+serviceAccount:
+  # -- Create a ServiceAccount.
+  create: true
+  # -- Name of the ServiceAccount (generated from the full name if empty).
+  name: ""
+  # -- ServiceAccount annotations.
+  annotations: {}
+  # -- Mount the API token; NautilusLB uses in-cluster credentials to watch
+  # nodes, services and endpointslices, so keep this true.
+  automount: true
+
+rbac:
+  # -- Create the RBAC objects: list+watch on nodes (ClusterRole, always) and
+  # list+watch on services and discovery.k8s.io endpointslices, namespaced
+  # Roles per allowlisted namespace, or a ClusterRole when any configuration
+  # uses namespaces ["*"]. Nothing else is granted.
+  create: true
+
+service:
+  # -- Render a Service for the listeners (never with hostNetwork).
+  enabled: true
+  # -- ClusterIP, LoadBalancer or NodePort.
+  type: ClusterIP
+  # -- Service annotations (cloud load balancer settings and so on).
+  annotations: {}
+  # -- Extra Service labels.
+  labels: {}
+  # -- Cluster (default) or Local. Local keeps the client source address,
+  # which config access lists and proxyProtocol need, at the cost of
+  # node-level balancing (LoadBalancer/NodePort only).
+  externalTrafficPolicy: ""
+  # -- Fixed load balancer IP, if the provider supports it.
+  loadBalancerIP: ""
+  # -- Restrict LoadBalancer source ranges.
+  loadBalancerSourceRanges: []
+  # -- LoadBalancer class.
+  loadBalancerClass: ""
+  # -- Dual-stack settings.
+  ipFamilyPolicy: ""
+  ipFamilies: []
+
+metricsService:
+  # -- Render a ClusterIP Service for the admin port. Always rendered when
+  # serviceMonitor.enabled is true (ServiceMonitors select Services).
+  enabled: false
+  annotations: {}
+
+serviceMonitor:
+  # -- Create a prometheus-operator ServiceMonitor for /metrics.
+  enabled: false
+  # -- Namespace for the ServiceMonitor (release namespace if empty).
+  namespace: ""
+  # -- Labels your Prometheus selects ServiceMonitors by.
+  labels: {}
+  interval: 30s
+  scrapeTimeout: 10s
+  relabelings: []
+  metricRelabelings: []
+
+podDisruptionBudget:
+  # -- Create a PodDisruptionBudget. Rendered only for mode Deployment with
+  # replicaCount > 1 (kubectl drain ignores DaemonSet pods anyway).
+  enabled: true
+  # -- Minimum available pods. Ignored when maxUnavailable is set.
+  minAvailable: 1
+  maxUnavailable: null
+
+probes:
+  # -- Startup probe on GET /healthz; up to 60s before liveness takes over.
+  startup:
+    enabled: true
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 30
+  # -- Liveness probe on GET /healthz.
+  liveness:
+    enabled: true
+    periodSeconds: 10
+    timeoutSeconds: 2
+    failureThreshold: 3
+  # -- Readiness probe on GET /readyz (503 until discovery has synced and while
+  # draining).
+  readiness:
+    enabled: true
+    periodSeconds: 2
+    timeoutSeconds: 2
+    failureThreshold: 1
+    successThreshold: 1
+
+# -- Pod-level securityContext. fsGroup lets UID 65532 read mounted volumes.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container-level securityContext. capabilities are managed by the chart
+# (drop ALL; add NET_BIND_SERVICE only with privilegedPortsMode: root); set
+# capabilities here to replace them.
+containerSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  privileged: false
+  seccompProfile:
+    type: RuntimeDefault
+
+# -- Container resources. No CPU limit: CFS throttling adds latency to every
+# proxied byte. Memory grows with connections and UDP sessions
+# (udp.maxSessions x (bufferSize + ~10KB)).
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
+
+# -- Extra arguments after --config.
+extraArgs: []
+# -- Extra environment variables (e.g. NLB_LOG_LEVEL; settings.* overrides
+# documented in app/config.example.yaml).
+extraEnv: []
+# -- Extra volumes / volumeMounts (e.g. an access log directory).
+extraVolumes: []
+extraVolumeMounts: []
+
+podAnnotations: {}
+podLabels: {}
+# -- Extra labels on every resource.
+commonLabels: {}
+priorityClassName: ""
+nodeSelector: {}
+tolerations: []
+affinity: {}
+topologySpreadConstraints: []
+
+networkPolicy:
+  # -- Create a NetworkPolicy (ingress only unless egress is set): listener
+  # ports open to everyone, the admin port only to adminFrom peers (plus
+  # whatever your CNI allows for kubelet probes).
+  enabled: false
+  # -- Peers allowed to reach the admin port, e.g. the Prometheus namespace:
+  #   - namespaceSelector:
+  #       matchLabels: {kubernetes.io/metadata.name: monitoring}
+  adminFrom: []
+  # -- Peers allowed to reach the listener ports (empty = everyone).
+  listenerFrom: []
+  # -- Egress rules. Empty leaves egress unrestricted. NautilusLB needs the
+  # API server, DNS if the kubeconfig uses names, and every node's NodePorts.
+  egress: []
