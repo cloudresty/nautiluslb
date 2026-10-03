@@ -280,6 +280,13 @@ Backends are node or ClusterIP addresses, never pod IPs. Kubernetes routes the c
 | `ClusterIP` | `<clusterIP>:<port>` (the Service `port`, not `targetPort`) | reachable only where ClusterIPs are routed (in-cluster or on a node). With dual-stack, `addressFamily` selects the ClusterIP. Headless Services are skipped. |
 | other (`ExternalName`) | none | logged once and ignored |
 
+**Recommended: `externalTrafficPolicy: Local` on `NodePort` and `LoadBalancer` Services behind NautilusLB.**
+
+- **What it changes:** NautilusLB then sends traffic only to nodes that host a ready pod, so kube-proxy does not forward it a second time to another node.
+- **Why it matters:** with the default `Cluster` policy, the node SNATs that forwarded traffic. Every connection then reaches the pod from the node's own address, and connection churn from NautilusLB reuses the node's source ports into the pod's TIME_WAIT sockets.
+- **What breaks with `Cluster`:** in the [performance runs](../test/perf/README.md), heavy short-lived connection churn through a `Cluster` Service dropped SYNs. A direct client managed about 3k connections/s with a p99 of 1.3s, against about 49k/s and a p99 of 6ms with `Local`.
+- **Scope:** this affects any proxy in front of such Services, not only NautilusLB. `Local` also avoids the extra hop.
+
 ## Examples
 
 Every example below is a complete file that `--validate` accepts. Merge the `configurations` you need into one file.
