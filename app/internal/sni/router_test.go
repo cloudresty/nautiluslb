@@ -48,3 +48,18 @@ func TestRouterDuplicateHost(t *testing.T) {
 		}
 	}
 }
+
+// Hosts that no ClientHello could carry are rejected when the router is
+// built, instead of becoming routes that never match (found by FuzzRouterMatch).
+func TestRouterRejectsMalformedHosts(t *testing.T) {
+	for _, h := range []string{"..", ".", "00..", "a..b", "-a.example", "a b.example", "*.", "*..example", "*.a..b", "a.*.example"} {
+		if _, err := NewRouter([]RouteHosts{{Name: "r", Hosts: []string{h}}}, ""); err == nil {
+			t.Errorf("host %q accepted", h)
+		}
+	}
+	for _, h := range []string{"example.com", "Example.COM.", "*.example.com", "a_b.example"} {
+		if _, err := NewRouter([]RouteHosts{{Name: "r", Hosts: []string{h}}}, ""); err != nil {
+			t.Errorf("host %q rejected: %v", h, err)
+		}
+	}
+}

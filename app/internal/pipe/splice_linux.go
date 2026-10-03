@@ -3,12 +3,14 @@
 package pipe
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/cloudresty/emit"
 )
@@ -47,12 +49,19 @@ func probeSplice() error {
 		return err
 	}
 	defer func() { _ = syscall.Close(fds[0]); _ = syscall.Close(fds[1]) }()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	// Everything is loopback, but bound it anyway: the probe runs on the
+	// first eligible connection and must never stall it.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	l, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return err
 	}
 	defer func() { _ = l.Close() }()
-	a, err := net.Dial("tcp", l.Addr().String())
+	if dl, ok := ctx.Deadline(); ok {
+		_ = l.(*net.TCPListener).SetDeadline(dl)
+	}
+	a, err := (&net.Dialer{}).DialContext(ctx, "tcp", l.Addr().String())
 	if err != nil {
 		return err
 	}
@@ -70,7 +79,7 @@ func probeSplice() error {
 		return err
 	}
 	var serr error
-	if err = rc.Read(func(fd uintptr) bool {
+	if err := rc.Read(func(fd uintptr) bool {
 		_, serr = syscall.Splice(int(fd), nil, fds[1], nil, 1, 0x2) // SPLICE_F_NONBLOCK
 		return serr != syscall.EAGAIN
 	}); err != nil {

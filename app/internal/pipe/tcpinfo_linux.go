@@ -30,8 +30,12 @@ func readTCPInfo(conn *net.TCPConn) (sampler, error) {
 		cerr := rc.Control(func(fd uintptr) {
 			var info unix.TCPInfo
 			vallen := uint32(unix.SizeofTCPInfo)
+			// Raw getsockopt instead of unix.GetsockoptTCPInfo: only the raw
+			// call reports how many bytes the kernel filled (vallen), which
+			// is how kernels older than 4.6 are detected. The buffer is the
+			// full Go struct and vallen never exceeds its size.
 			_, _, errno := syscall.Syscall6(syscall.SYS_GETSOCKOPT, fd, unix.SOL_TCP, unix.TCP_INFO,
-				uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&vallen)), 0)
+				uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&vallen)), 0) //nolint:gosec // G103: see above; bounded by SizeofTCPInfo
 			if errno != 0 {
 				serr = errno
 				return

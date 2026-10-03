@@ -24,19 +24,23 @@ func NewRouter(routes []RouteHosts, defaultRoute string) (*Router, error) {
 	rt := &Router{exact: map[string]string{}, wildcard: map[string]string{}, def: defaultRoute}
 	for _, route := range routes {
 		for _, h := range route.Hosts {
-			h = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(h), "."))
+			h = strings.TrimSpace(h)
 			if h == "" {
 				return nil, fmt.Errorf("sni: route %q has an empty host", route.Name)
 			}
-			m, key := rt.exact, h
+			// Hosts are normalised exactly like server names read from a
+			// ClientHello, and the normalised form is the key, so a route
+			// can never be configured that no ClientHello could match.
+			m := rt.exact
+			name, prefix := h, ""
 			if strings.HasPrefix(h, "*.") {
-				m, key = rt.wildcard, h[1:]
-				if len(key) < 2 || strings.Contains(key, "*") {
-					return nil, fmt.Errorf("sni: route %q has invalid wildcard %q", route.Name, h)
-				}
-			} else if strings.Contains(h, "*") {
+				m, name, prefix = rt.wildcard, h[2:], "."
+			}
+			n, err := normalize(name)
+			if err != nil {
 				return nil, fmt.Errorf("sni: route %q has invalid host %q", route.Name, h)
 			}
+			key := prefix + n
 			if prev, dup := m[key]; dup {
 				return nil, fmt.Errorf("sni: host %q used by routes %q and %q", h, prev, route.Name)
 			}
