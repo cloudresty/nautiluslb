@@ -452,8 +452,8 @@ func TestCapSkipUsesNextCandidate(t *testing.T) {
 	if got := roundTrip(t, h.client(t), "x"); got != "B:x" {
 		t.Fatalf("reply = %q, want B:x", got)
 	}
-	if h.rec.rej("limit_backend") != 0 {
-		t.Fatal("unexpected limit_backend rejection")
+	if h.rec.rej("no_backend") != 0 {
+		t.Fatal("unexpected no_backend rejection")
 	}
 }
 
@@ -463,7 +463,7 @@ func TestAllCandidatesAtCapRejects(t *testing.T) {
 	full.TryAcquire()
 	h := start(t, baseCfg(), &fakePool{bs: []*backend.Backend{full}, all: true}, nil)
 	_, _ = h.client(t).Write([]byte("x"))
-	eventually(t, "limit_backend rejection", func() bool { return h.rec.rej("limit_backend") > 0 })
+	eventually(t, "no_backend rejection", func() bool { return h.rec.rej("no_backend") > 0 })
 }
 
 func TestDrainForcedMetric(t *testing.T) {

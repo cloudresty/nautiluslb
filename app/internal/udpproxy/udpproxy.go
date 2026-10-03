@@ -348,7 +348,7 @@ func (l *Listener) open(c *net.UDPConn, from, key netip.AddrPort, data []byte) {
 	var (
 		b      *backend.Backend
 		bc     net.Conn
-		reason = "limit_backend" // every candidate at its cap
+		reason = "no_backend" // every candidate at its cap
 	)
 	for _, cand := range cands {
 		if !cand.TryAcquire() {

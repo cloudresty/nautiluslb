@@ -29,6 +29,12 @@ type Recorder interface {
 	UDPDatagram(listener, direction string, n int)
 	DiscoveryReconcile(result string, d time.Duration)
 	InformerSynced(resource string, ok bool)
+	// DiscoveryAPISuccess records that the Kubernetes API answered: a list
+	// completed or a watch delivered a real change. Cache-only resyncs do not
+	// count.
+	DiscoveryAPISuccess()
+	// DiscoveryWatchError counts a failed list or watch of an informer.
+	DiscoveryWatchError(resource string)
 	ConfigReload(result string)
 	Ready(ok bool)
 	PipeMode(mode string)
@@ -57,7 +63,7 @@ type prom struct {
 	probeDur                         *prometheus.HistogramVec
 	udpActive                        *prometheus.GaugeVec
 	udpSessions, udpDatagrams        *prometheus.CounterVec
-	reconcileTotal                   *prometheus.CounterVec
+	reconcileTotal, watchErrors      *prometheus.CounterVec
 	reconcileDur                     prometheus.Observer
 	informerSynced                   *prometheus.GaugeVec
 	dropped                          prometheus.Counter
@@ -107,7 +113,8 @@ func NewPrometheus(reg prometheus.Registerer, perBackend bool) Recorder {
 	p.reconcileTotal = f.counter("discovery_reconcile_total", "Discovery reconcile outcomes.", "result")
 	p.reconcileDur = f.hist("discovery_reconcile_duration_seconds", "Reconcile duration.",
 		prometheus.ExponentialBucketsRange(0.001, 30, 14)).WithLabelValues()
-	p.lastReconcile = f.gauge("discovery_last_success_timestamp_seconds", "Unix time of the last successful reconcile.")
+	p.lastReconcile = f.gauge("discovery_last_success_timestamp_seconds", "Unix time the Kubernetes API last answered discovery: an informer list completed or a watch delivered an add, update or delete. Cache-only resyncs do not advance it, and a quiet cluster delivers no events, so only a long gap together with watch errors indicates an outage.")
+	p.watchErrors = f.counter("discovery_watch_errors_total", "Failed informer list or watch calls against the Kubernetes API.", "resource")
 	p.informerSynced = f.gaugeVec("discovery_informer_synced", "1 when informers of the resource are synced.", "resource")
 	p.drainForced = f.counter("drain_forced_total", "Connections force-closed when a drain deadline expired.", "listener")
 	p.dropped = f.counter("accesslog_dropped_total", "Access log records dropped on overflow.").WithLabelValues()
@@ -221,9 +228,12 @@ func (p *prom) UDPDatagram(l, direction string, n int) {
 func (p *prom) DiscoveryReconcile(result string, d time.Duration) {
 	p.reconcileTotal.WithLabelValues(result).Inc()
 	p.reconcileDur.Observe(d.Seconds())
-	if result == "applied" || result == "unchanged" {
-		p.lastReconcile.SetToCurrentTime()
-	}
+}
+
+func (p *prom) DiscoveryAPISuccess() { p.lastReconcile.SetToCurrentTime() }
+
+func (p *prom) DiscoveryWatchError(resource string) {
+	p.watchErrors.WithLabelValues(resource).Inc()
 }
 
 func (p *prom) InformerSynced(resource string, ok bool) {
@@ -262,6 +272,8 @@ func (nop) UDPSession(string, string)                                 {}
 func (nop) UDPDatagram(string, string, int)                           {}
 func (nop) DiscoveryReconcile(string, time.Duration)                  {}
 func (nop) InformerSynced(string, bool)                               {}
+func (nop) DiscoveryAPISuccess()                                      {}
+func (nop) DiscoveryWatchError(string)                                {}
 func (nop) ConfigReload(string)                                       {}
 func (nop) Ready(bool)                                                {}
 func (nop) PipeMode(string)                                           {}

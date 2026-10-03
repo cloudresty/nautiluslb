@@ -25,7 +25,10 @@ NautilusLB keeps no state that another instance needs. Each instance discovers S
 | discovery has not synced within 60s (serving anyway, every connection gets `no_backend` until endpoints arrive) | `503` | `discovery not synced` |
 | discovery failed to start (the process then exits 1) | `503` | `discovery failed` |
 | listeners serving and discovery synced | `200 {"status":"ready"}` | — |
+| Kubernetes API unreachable after the first sync | `200 {"status":"ready"}` | — (pools keep serving their last known endpoints) |
 | SIGTERM/SIGINT received | `503` | `shutting down` |
+
+Readiness is a one-way latch after the first sync. Losing the Kubernetes API later does not flip it: the informers keep their cache and reconnect with backoff, every pool keeps its last endpoints, and the peer instance sees the same API, so moving the VIP would gain nothing. Watch `nautiluslb_discovery_watch_errors_total` and `nautiluslb_discovery_last_success_timestamp_seconds` instead (see the [example alerts](metrics.md#example-alerts)).
 
 `/readyz` does not reflect backend health. A pool with no healthy backend fails open and still proxies. Alert on that with [metrics](metrics.md#example-alerts). Do not move the VIP for it, because the peer sees the same backends.
 

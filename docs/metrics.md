@@ -85,7 +85,8 @@ UDP listeners do not emit `connections_accepted_total`, `connections_active` or 
 | `nautiluslb_discovery_reconcile_total` | counter | `result` = `applied`, `unchanged`, `skipped` | `applied`: at least one pool's endpoints changed. `unchanged`: nothing changed. `skipped`: some pool was not recomputed because its namespace store, or the Nodes store a NodePort pool needs, has not synced. |
 | `nautiluslb_discovery_reconcile_duration_seconds` | histogram | — | recompute time. Buckets: 14 exponential from 0.001s to 30s. |
 | `nautiluslb_discovery_informer_synced` | gauge | `resource` = `nodes`, `services`, `endpointslices` | 1 when synced. For `services` and `endpointslices` it is 1 only when every namespace's informer has synced. |
-| `nautiluslb_discovery_last_success_timestamp_seconds` | gauge | — | Unix time of the last `applied` or `unchanged` reconcile. A `skipped` reconcile does not advance it. |
+| `nautiluslb_discovery_last_success_timestamp_seconds` | gauge | — | Unix time the Kubernetes API last answered discovery: an informer list completed, or a watch delivered an add, update or delete. Cache-only resyncs do not advance it. A quiet cluster delivers no events, so a stale value alone is not an outage; pair it with watch errors. |
+| `nautiluslb_discovery_watch_errors_total` | counter | `resource` = `nodes`, `services`, `endpointslices` | failed informer list or watch calls against the Kubernetes API. Informers retry with backoff and pools keep their last endpoints meanwhile. |
 
 ## Rejection reasons
 
@@ -101,8 +102,7 @@ UDP listeners do not emit `connections_accepted_total`, `connections_active` or 
 | `proxy_header` | tcp, tls | malformed PROXY header from a trusted peer, or missing with `proxyProtocol.in.required` |
 | `sni_error` | tls | not a TLS ClientHello, ClientHello larger than `tls.maxClientHello`, or not received within `tls.peekTimeout` |
 | `sni_no_route` | tls | the server name matches no route and there is no `tls.defaultRoute` |
-| `no_backend` | tcp, tls, udp | the pool is empty, or every candidate is at `maxConnectionsPerBackend` (tcp/tls) |
-| `limit_backend` | udp | every candidate backend is at `maxConnectionsPerBackend` |
+| `no_backend` | tcp, tls, udp | the pool is empty, or every candidate is at `maxConnectionsPerBackend` |
 | `dial_failed` | tcp, tls, udp | up to 3 backends were tried and none connected |
 | `backend_write` | tcp, tls | writing the outbound PROXY header failed |
 | `write_error` | udp | a backend reply could not be sent to the client. The datagram is dropped and the session continues. |
@@ -168,11 +168,22 @@ groups:
         annotations:
           summary: "Access log is dropping records: raise settings.accessLog.bufferSize or use a faster output"
 
-      - alert: NautilusLBDiscoveryStale
-        expr: time() - nautiluslb_discovery_last_success_timestamp_seconds > 900
+      - alert: NautilusLBDiscoveryAPIErrors
+        expr: sum by (instance, resource) (increase(nautiluslb_discovery_watch_errors_total[5m])) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Discovery cannot list/watch {{ $labels.resource }} (RBAC, API server reachability); pools are serving their last known endpoints"
+
+      - alert: NautilusLBDiscoveryBlind
+        # Watch errors AND no answer from the API for 10m: endpoint changes are not being seen.
+        # A stale timestamp alone is normal in a quiet cluster.
+        expr: |
+          (time() - nautiluslb_discovery_last_success_timestamp_seconds > 600)
+          and on (instance) (sum by (instance) (increase(nautiluslb_discovery_watch_errors_total[10m])) > 0)
         labels: {severity: critical}
         annotations:
-          summary: "Discovery has not completed a full reconcile for 15m (RBAC, API server reachability)"
+          summary: "Discovery has not reached the Kubernetes API for 10m; backend changes are not being applied"
 
       - alert: NautilusLBInformerNotSynced
         expr: min by (instance, resource) (nautiluslb_discovery_informer_synced) == 0
@@ -196,7 +207,7 @@ groups:
         labels: {severity: warning}
 ```
 
-`NautilusLBDiscoveryStale` uses 900s, three times the default `resyncPeriod` of 5m. Every resync runs a reconcile, so a healthy instance advances the timestamp at least that often. In a quiet cluster the timestamp moves only on resync or on change. Keep the threshold above `resyncPeriod`.
+`NautilusLBDiscoveryBlind` needs both signals because the timestamp alone cannot tell a quiet cluster from a lost API: cache-only resyncs do not advance it, so in a cluster where no Service, EndpointSlice or Node changes it can legitimately stay old for hours. Watch errors prove the API is not answering, and the stale timestamp proves nothing got through in the meantime. `NautilusLBDiscoveryAPIErrors` fires earlier on errors alone. During an outage, readiness stays 200 and pools keep their last endpoints (see [HA](ha.md#readiness-contract)).
 
 `NautilusLBDrainForced` fires when a drain deadline expired with work still open. A reload that retires a listener is visible to it (as with any counter, `increase()` cannot see the first increment of a series that was not exported at 0 before it). At shutdown the admin server stops last, but the process exits right after, so the final increment is seen only if a scrape lands between the force-close and the admin server stopping (up to about 2s). For shutdowns, `NautilusLBDrainingWithOpenConnections` is the reliable signal, and the exact count is also in the log:
 

@@ -46,6 +46,13 @@ var dialKeepAlive = net.KeepAliveConfig{
 	Count:    3,
 }
 
+// defaultDial is the production backend dialer: keepalive enabled so a vanished
+// backend is noticed.
+func defaultDial() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	d := &net.Dialer{KeepAliveConfig: dialKeepAlive}
+	return d.DialContext
+}
+
 // ErrAddressChanged is returned by Update when the listener address or
 // protocol differs: that needs a new Listener, not an in-place update.
 var ErrAddressChanged = errors.New("tcpproxy: listener address or protocol changed")
@@ -140,8 +147,7 @@ func New(opts Options) (*Listener, error) {
 		l.alog = accesslog.Nop()
 	}
 	if l.dial == nil {
-		d := &net.Dialer{KeepAliveConfig: dialKeepAlive}
-		l.dial = d.DialContext
+		l.dial = defaultDial()
 	}
 	l.baseCtx, l.cancel = context.WithCancel(context.Background())
 	l.rc.Store(rc)

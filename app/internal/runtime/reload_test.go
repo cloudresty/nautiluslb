@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"net"
+	"runtime"
 	"slices"
 	"testing"
 	"time"
@@ -261,4 +262,39 @@ func TestReloadSerialisedWithShutdown(t *testing.T) {
 	if _, err := h.rt.Reload(mustCfg(t, doc("2s", tcpCfg("a", anyAddr, "")))); err == nil {
 		t.Fatal("Reload after Shutdown succeeded")
 	}
+}
+
+func TestShutdownDuringBackgroundDrainForcesReplaced(t *testing.T) {
+	port := echoBackend(t)
+	newAddr := freeAddr(t)
+	h := startRT(t, doc("30s", tcpCfg("web", anyAddr, "")), nil, tcpSvc("s", "web", port))
+	base := runtime.NumGoroutine()
+	oldAddr := h.addr("web")
+	held := waitProxied(t, oldAddr) // stays open on the old listener
+
+	sum, err := h.rt.Reload(mustCfg(t, doc("30s", tcpCfg("web", newAddr, ""))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sum.Replaced, []string{"web"}) {
+		t.Fatalf("summary = %+v", sum)
+	}
+	if !echo(held, "still-served") {
+		t.Fatal("held connection was cut by the reload")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	down := h.rt.Shutdown(ctx)
+	if down.Forced < 1 {
+		t.Fatalf("Forced = %d, want the background-drained connection counted", down.Forced)
+	}
+	if !refused(oldAddr) {
+		t.Fatal("old socket still accepting after Shutdown")
+	}
+	if !refused(newAddr) {
+		t.Fatal("new socket still accepting after Shutdown")
+	}
+	_ = held.Close()
+	eventually(t, "goroutines released", func() bool { return runtime.NumGoroutine() <= base+2 })
 }

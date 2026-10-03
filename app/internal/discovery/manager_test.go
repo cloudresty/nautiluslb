@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"runtime"
 	"slices"
 	"sync"
@@ -463,5 +464,92 @@ func TestSyncedClosesOnce(t *testing.T) {
 	case <-m.Synced():
 	case <-time.After(5 * time.Second):
 		t.Fatal("Synced not closed after Start returned nil")
+	}
+}
+
+type apiRecorder struct {
+	metrics.Recorder
+	mu      sync.Mutex
+	errs    map[string]int
+	success int
+}
+
+func (r *apiRecorder) DiscoveryWatchError(resource string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.errs[resource]++
+}
+
+func (r *apiRecorder) DiscoveryAPISuccess() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.success++
+}
+
+func (r *apiRecorder) snapshot() (errs map[string]int, success int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return maps.Clone(r.errs), r.success
+}
+
+func TestWatchErrorsCounted(t *testing.T) {
+	client := fake.NewClientset(node("n1", "10.0.0.1"))
+	var fail atomic.Bool
+	client.PrependWatchReactor("*", func(k8stesting.Action) (bool, watch.Interface, error) {
+		if fail.Load() {
+			return true, nil, errors.New("api down")
+		}
+		return false, nil, nil
+	})
+	rec := &apiRecorder{Recorder: metrics.NewNop(), errs: map[string]int{}}
+	opts := testOpts(&recSink{}, 10*time.Millisecond)
+	opts.Recorder = rec
+	fail.Store(true) // lists succeed (informers sync), every watch fails
+	startManager(t, client, opts, poolSpec("p", "a"))
+	waitFor(t, "watch errors per resource", func() bool {
+		errs, _ := rec.snapshot()
+		return errs["services"] > 0 && errs["endpointslices"] > 0 && errs["nodes"] > 0
+	})
+}
+
+func TestWatchWarnRateLimited(t *testing.T) {
+	rl := newRateLimiter(time.Minute)
+	t0 := time.Now()
+	if !rl.allow("services", t0) {
+		t.Fatal("first warn suppressed")
+	}
+	if rl.allow("services", t0.Add(30*time.Second)) {
+		t.Fatal("second warn within a minute not suppressed")
+	}
+	if !rl.allow("nodes", t0.Add(time.Second)) {
+		t.Fatal("other resource must warn independently")
+	}
+	if !rl.allow("services", t0.Add(61*time.Second)) {
+		t.Fatal("warn after the interval suppressed")
+	}
+}
+
+func TestLastSuccessNotAdvancedByResync(t *testing.T) {
+	client := fake.NewClientset()
+	rec := &apiRecorder{Recorder: metrics.NewNop(), errs: map[string]int{}}
+	opts := testOpts(&recSink{}, 10*time.Millisecond)
+	opts.Recorder = rec
+	m := NewManager(client, opts)
+	h := m.handler()
+
+	svc := nodePortSvc("a", "svc", bound("p"), corev1.ServicePort{Name: "https", NodePort: 30001})
+	svc.ResourceVersion = "7"
+	_, before := rec.snapshot()
+	h.OnUpdate(svc, svc.DeepCopy()) // resync: identical version
+	if _, after := rec.snapshot(); after != before {
+		t.Fatalf("resync advanced success (%d -> %d)", before, after)
+	}
+	changed := svc.DeepCopy()
+	changed.ResourceVersion = "8"
+	h.OnUpdate(svc, changed)
+	h.OnAdd(svc, false)
+	h.OnDelete(svc)
+	if _, after := rec.snapshot(); after != before+3 {
+		t.Fatalf("real events: success = %d, want %d", after, before+3)
 	}
 }

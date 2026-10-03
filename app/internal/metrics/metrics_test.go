@@ -23,6 +23,8 @@ func exercise(r Recorder) {
 	r.UDPDatagram("l", "in", 5)
 	r.DiscoveryReconcile("applied", time.Millisecond)
 	r.InformerSynced("nodes", true)
+	r.DiscoveryAPISuccess()
+	r.DiscoveryWatchError("nodes")
 	r.ConfigReload("applied")
 	r.Ready(true)
 	r.PipeMode("splice")
@@ -56,7 +58,7 @@ func TestEveryCatalogueMetricRegistered(t *testing.T) {
 		"backend_healthy", "backend_health_transitions_total", "pool_backends",
 		"health_probe_duration_seconds", "udp_sessions_active", "udp_sessions_total",
 		"udp_datagrams_total", "discovery_reconcile_total", "discovery_reconcile_duration_seconds",
-		"discovery_informer_synced", "discovery_last_success_timestamp_seconds", "accesslog_dropped_total", "drain_forced_total",
+		"discovery_informer_synced", "discovery_watch_errors_total", "discovery_last_success_timestamp_seconds", "accesslog_dropped_total", "drain_forced_total",
 	} {
 		if _, ok := got["nautiluslb_"+n]; !ok {
 			t.Errorf("missing nautiluslb_%s", n)

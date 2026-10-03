@@ -14,6 +14,7 @@ import (
 	"github.com/cloudresty/emit"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -73,6 +74,9 @@ type Manager struct {
 	opts   Options
 	warned *warnTracker
 
+	// watchWarn rate-limits the watch failure warning per resource.
+	watchWarn *rateLimiter
+
 	// syncTimeout is how long Start waits for the first sync (tests shorten it).
 	syncTimeout time.Duration
 
@@ -120,6 +124,7 @@ func NewManager(client kubernetes.Interface, opts Options) *Manager {
 		client:      client,
 		opts:        opts,
 		warned:      newWarnTracker(),
+		watchWarn:   newRateLimiter(time.Minute),
 		syncTimeout: timeout,
 		syncedCh:    make(chan struct{}),
 		trigger:     make(chan struct{}, 1),
@@ -148,10 +153,53 @@ func (m *Manager) signal() {
 
 func (m *Manager) handler() cache.ResourceEventHandler {
 	return cache.ResourceEventHandlerFuncs{
-		AddFunc:    func(any) { m.signal() },
-		UpdateFunc: func(_, _ any) { m.signal() },
-		DeleteFunc: func(any) { m.signal() },
+		AddFunc: func(any) {
+			m.opts.Recorder.DiscoveryAPISuccess()
+			m.signal()
+		},
+		UpdateFunc: func(oldObj, newObj any) {
+			// A cache-only resync redelivers the same object version: the API
+			// did not answer, so it must not count as a success.
+			if !sameVersion(oldObj, newObj) {
+				m.opts.Recorder.DiscoveryAPISuccess()
+			}
+			m.signal()
+		},
+		DeleteFunc: func(any) {
+			m.opts.Recorder.DiscoveryAPISuccess()
+			m.signal()
+		},
 	}
+}
+
+// sameVersion reports whether both objects carry the same non-empty
+// ResourceVersion, which is how a resync replay looks.
+func sameVersion(a, b any) bool {
+	ma, errA := meta.Accessor(a)
+	mb, errB := meta.Accessor(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return ma.GetResourceVersion() != "" && ma.GetResourceVersion() == mb.GetResourceVersion()
+}
+
+// watchErrors installs the watch error handler of one informer, before it
+// starts. It counts the error, warns at most once a minute per resource, then
+// defers to client-go's default handling so its logging and backoff are
+// unchanged.
+func (m *Manager) watchErrors(inf cache.SharedIndexInformer, resource string) error {
+	err := inf.SetWatchErrorHandlerWithContext(func(ctx context.Context, r *cache.Reflector, err error) {
+		m.opts.Recorder.DiscoveryWatchError(resource)
+		if m.watchWarn.allow(resource, time.Now()) {
+			emit.Warn.StructuredFields("Discovery watch failed, keeping last known endpoints",
+				emit.ZString("resource", resource), emit.ZString("error", err.Error()))
+		}
+		cache.DefaultWatchErrorHandler(ctx, r, err)
+	})
+	if err != nil {
+		return fmt.Errorf("setting %s watch error handler: %w", resource, err)
+	}
+	return nil
 }
 
 // namespacesOf returns the distinct namespaces the specs need, "" meaning
@@ -185,7 +233,10 @@ func (m *Manager) newNSFactory(ns string) (*nsFactory, error) {
 		svcList:  func() ([]*corev1.Service, error) { return svcs.Lister().List(labels.Everything()) },
 		sliceLst: func() ([]*discoveryv1.EndpointSlice, error) { return sls.Lister().List(labels.Everything()) },
 	}
-	for _, inf := range []cache.SharedIndexInformer{f.services, f.slices} {
+	for i, inf := range []cache.SharedIndexInformer{f.services, f.slices} {
+		if err := m.watchErrors(inf, []string{"services", "endpointslices"}[i]); err != nil {
+			return nil, err
+		}
 		if _, err := inf.AddEventHandler(m.handler()); err != nil {
 			return nil, fmt.Errorf("adding event handler for namespace %q: %w", ns, err)
 		}
@@ -198,6 +249,7 @@ func (m *Manager) newNSFactory(ns string) (*nsFactory, error) {
 		defer m.wg.Done()
 		// Informers fire no event for an empty first list; signal once synced.
 		if cache.WaitForCacheSync(ctx.Done(), f.services.HasSynced, f.slices.HasSynced) {
+			m.opts.Recorder.DiscoveryAPISuccess()
 			m.signal()
 		}
 	}()
@@ -212,6 +264,9 @@ func (m *Manager) newNodeFactory() (*nodeFactory, error) {
 		nodes:   nodes.Informer(),
 		list:    func() ([]*corev1.Node, error) { return nodes.Lister().List(labels.Everything()) },
 	}
+	if err := m.watchErrors(n.nodes, "nodes"); err != nil {
+		return nil, err
+	}
 	if _, err := n.nodes.AddEventHandler(m.handler()); err != nil {
 		return nil, fmt.Errorf("adding node event handler: %w", err)
 	}
@@ -222,6 +277,7 @@ func (m *Manager) newNodeFactory() (*nodeFactory, error) {
 	go func() {
 		defer m.wg.Done()
 		if cache.WaitForCacheSync(ctx.Done(), n.nodes.HasSynced) {
+			m.opts.Recorder.DiscoveryAPISuccess()
 			m.signal()
 		}
 	}()

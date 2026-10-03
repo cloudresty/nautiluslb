@@ -116,7 +116,7 @@ The file output is opened once, in append mode. Rotate it with `copytruncate` (l
 - `limit_global`: raise `settings.limits.maxConnections` (restart required), or add capacity.
 - `limit_listener`: raise `limits.maxConnections`, or `udp.maxSessions` for UDP (hot-reloadable).
 - `limit_source`: a single client IP is over `maxConnectionsPerSource`/`maxSessionsPerSource`. Behind a NAT or an upstream balancer, all clients share one IP. Use PROXY protocol in, but note that the per-source limit still applies to the transport peer.
-- `no_backend` / `limit_backend`: see above. `limit_backend` (UDP) means every candidate is at `maxConnectionsPerBackend`.
+- `no_backend`: see above. For both TCP and UDP it also covers every candidate being at `maxConnectionsPerBackend`.
 - `dial_failed` with `backend_dial_total{result="local"}`: the LB host is out of file descriptors or ephemeral ports. Backends are not ejected for this. See [Sizing](#sizing).
 
 ### Common log lines
@@ -214,5 +214,5 @@ These hold in every release. A change that breaks one is a bug.
 13. **`namespaces` is required**, and `"*"` must be alone.
 14. **Strict configuration.** The file must be a single YAML document. Unknown keys are errors, all errors are reported together, names are unique and listener conflicts are detected.
 15. **ClusterIP Services are dialled on `port`**, not `targetPort`.
-16. **Scoped configurations need only scoped RBAC.** Cluster-wide informers exist only if some configuration uses `"*"`.
+16. **Scoped configurations need only scoped RBAC for Services and EndpointSlices.** Cluster-wide Service and EndpointSlice informers exist only if some configuration uses `"*"`. The Nodes informer is always cluster-wide and readiness waits for it, so the `nodes` list+watch ClusterRole is always required, even for ClusterIP-only pools.
 17. **Local resource errors never eject backends** (EMFILE, ENFILE, EADDRNOTAVAIL, EAGAIN, ENOBUFS, EACCES).
