@@ -8,7 +8,7 @@
 #
 
 # golang:1.27.1-trixie
-FROM    --platform=$BUILDPLATFORM golang:1.27.1-trixie@sha256:3b77fc618ec235a1ab412de7737f120dd507c57e8d87de4cbb7994fb94275ed5 AS builder
+FROM    --platform=$BUILDPLATFORM golang:1.27.3-trixie@sha256:fbb7ae40b62ff8afe31662df570d39b4f5052ac32b90dae8e60d7657a20a74f4 AS builder
 
 ARG     TARGETOS
 ARG     TARGETARCH
